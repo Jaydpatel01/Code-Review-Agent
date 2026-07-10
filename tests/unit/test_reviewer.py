@@ -1,8 +1,8 @@
 """Unit tests for FileReviewer logic."""
 
 import pytest
-from code_reviewer.core.reviewer import FileReviewer
-from code_reviewer.core.models import LLMReviewResponse, LLMFinding, ReviewResult
+from code_reviewer.core.reviewer import FileReviewer, DiffReviewer
+from code_reviewer.core.models import LLMReviewResponse, LLMFinding, ReviewResult, DiffHunk
 from code_reviewer.config import Settings
 
 
@@ -64,3 +64,64 @@ def test_reviewer_filtering(mocker, tmp_path):
     assert result.findings[0].category == "security"
     assert result.findings[0].severity == "HIGH"
     assert result.findings[0].message == "Hardcoded API Key"
+
+
+def test_diff_reviewer_filtering(mocker):
+    """Test DiffReviewer filtering by severity threshold and mapping line numbers."""
+    mock_client = mocker.MagicMock()
+
+    mock_findings = [
+        LLMFinding(
+            line_number=2,  # hallucinated line number (not in added lines)
+            severity="HIGH",
+            category="security",
+            message="Hardcoded API Key",
+            suggestion="Use env var",
+        ),
+        LLMFinding(
+            line_number=12,  # valid line number in added lines
+            severity="MEDIUM",
+            category="logic",
+            message="Edge case",
+            suggestion="Fix it",
+        ),
+    ]
+    mock_client.generate_completion.return_value = LLMReviewResponse(
+        findings=mock_findings, summary="Diff Summary"
+    )
+    mock_client.model = "gemini-3.1-flash-lite"
+
+    settings = Settings()
+    settings.severity_threshold = "MEDIUM"
+
+    reviewer = DiffReviewer(llm_client=mock_client, settings=settings)
+
+    # Create dummy hunk
+    hunk = DiffHunk(
+        file_path="app.py",
+        start_line=10,
+        end_line=13,
+        added_lines=[(11, 'print("World")'), (12, 'return 1')],
+        removed_lines=[],
+        context_lines=[(10, 'print("Hello")')],
+        raw_hunk=""
+    )
+
+    result = reviewer.review_hunks("app.py", [hunk])
+
+    assert isinstance(result, ReviewResult)
+    assert result.file_path == "app.py"
+    assert result.lines_reviewed == 2
+
+    # Both should remain since severities are >= MEDIUM
+    assert len(result.findings) == 2
+
+    finding_1 = result.findings[0]
+    # The hallucinated line 2 should be mapped to 11 (first added line)
+    assert finding_1.line_number == 11
+    assert finding_1.category == "security"
+
+    finding_2 = result.findings[1]
+    # Valid line 12 stays 12
+    assert finding_2.line_number == 12
+    assert finding_2.category == "logic"
