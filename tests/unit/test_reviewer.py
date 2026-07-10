@@ -1,8 +1,8 @@
 """Unit tests for FileReviewer logic."""
 
 import pytest
-from code_reviewer.core.reviewer import FileReviewer, DiffReviewer
-from code_reviewer.core.models import LLMReviewResponse, LLMFinding, ReviewResult, DiffHunk
+from code_reviewer.core.reviewer import FileReviewer, DiffReviewer, combine_findings
+from code_reviewer.core.models import LLMReviewResponse, LLMFinding, ReviewResult, DiffHunk, Finding
 from code_reviewer.config import Settings
 
 
@@ -125,3 +125,50 @@ def test_diff_reviewer_filtering(mocker):
     # Valid line 12 stays 12
     assert finding_2.line_number == 12
     assert finding_2.category == "logic"
+
+def test_combine_findings_deduplication():
+    """Test that combine_findings properly deduplicates based on line_number and category."""
+    static = [
+        Finding(
+            file_path="app.py",
+            line_number=10,
+            severity="MEDIUM",
+            category="complexity",
+            message="Static complexity",
+            suggestion="Fix it",
+            source="ast"
+        )
+    ]
+    
+    llm = [
+        Finding(
+            file_path="app.py",
+            line_number=10,
+            severity="HIGH",
+            category="complexity",
+            message="LLM complexity",
+            suggestion="Fix it",
+            source="llm"
+        ),
+        Finding(
+            file_path="app.py",
+            line_number=10,
+            severity="MEDIUM",
+            category="style",
+            message="LLM style",
+            suggestion="Fix it",
+            source="llm"
+        )
+    ]
+    
+    combined = combine_findings(static, llm)
+    
+    assert len(combined) == 2
+    
+    # Static finding should be preserved
+    assert combined[0].source == "ast"
+    assert combined[0].message == "Static complexity"
+    
+    # LLM style finding on the same line is kept (different category)
+    assert combined[1].source == "llm"
+    assert combined[1].category == "style"
