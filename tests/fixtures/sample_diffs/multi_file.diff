@@ -1,0 +1,16 @@
+diff --git a/main.py b/main.py
+index e69de29..d95f3ad 100644
+--- a/main.py
++++ b/main.py
+@@ -1 +1,2 @@
+-pass
++def init():
++    pass
+diff --git a/utils.py b/utils.py
+index 3b18e51..620583b 100644
+--- a/utils.py
++++ b/utils.py
+@@ -5,2 +5,3 @@ def calc():
+     a = 1
++    b = 2
+     return a

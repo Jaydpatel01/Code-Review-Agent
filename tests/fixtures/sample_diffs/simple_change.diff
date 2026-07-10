@@ -1,0 +1,9 @@
+diff --git a/app.py b/app.py
+index e69de29..d95f3ad 100644
+--- a/app.py
++++ b/app.py
+@@ -10,3 +10,4 @@ def main():
+     print("Hello")
+-    return 0
++    print("World")
++    return 1
