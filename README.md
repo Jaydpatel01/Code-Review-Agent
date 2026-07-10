@@ -4,7 +4,8 @@ A production-grade AI-powered code review agent built with Python, Pydantic, and
 
 ---
 
-## Features (Phase 1)
+## Features
+- **Git Diff Awareness**: Reviews only changed lines in a git diff (staged changes, branch comparisons, etc.), drastically reducing noise and token usage.
 - **Local File Review**: Instantly reviews single source files for security, performance, complexity, logic, docstrings, and style.
 - **LiteLLM Abstraction**: Integrates with swappable LLM providers (defaulting to Gemini 3.1 Flash Lite) via a unified interface with built-in retry logic.
 - **Configurable Rules**: Uses a project-level `.codereviewer.yaml` config file for customizing severity thresholds and enabling/disabling specific rules.
@@ -69,6 +70,28 @@ output:
 ### CLI Commands
 
 Run the reviewer using `uv run`:
+
+#### Reviewing Git Diffs (Recommended)
+
+Review only the lines that have changed (diffs) rather than entire files.
+
+* **Review unstaged changes against HEAD**:
+  ```bash
+  uv run code-reviewer review diff
+  ```
+
+* **Review staged changes**:
+  ```bash
+  uv run code-reviewer review diff --staged
+  ```
+
+* **Review against a specific commit or branch range**:
+  ```bash
+  uv run code-reviewer review diff HEAD~1
+  uv run code-reviewer review diff main..feature-branch
+  ```
+
+#### Reviewing Single Files
 
 * **Standard pretty-printed review**:
   ```bash
