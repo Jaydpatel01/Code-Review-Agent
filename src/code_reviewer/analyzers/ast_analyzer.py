@@ -56,9 +56,21 @@ class ASTAnalyzer(ast.NodeVisitor):
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef):
         self._analyze_function(node)
         
+    def _walk_no_nested_funcs(self, node):
+        from collections import deque
+        todo = deque([node])
+        while todo:
+            curr = todo.popleft()
+            yield curr
+            for child in ast.iter_child_nodes(curr):
+                if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    todo.append(child)
+
     def _analyze_function(self, node: ast.AST):
         prev_function = self.current_function
+        prev_depth = self.current_depth
         self.current_function = node
+        self.current_depth = 0
         
         # 1. Function Length Check
         if self.settings.rules.complexity.enabled:
@@ -103,7 +115,7 @@ class ASTAnalyzer(ast.NodeVisitor):
         # 4. Cyclomatic Complexity Check (Approximation)
         if self.settings.rules.complexity.enabled:
             complexity = 1
-            for child in ast.walk(node):
+            for child in self._walk_no_nested_funcs(node):
                 if isinstance(child, (ast.If, ast.For, ast.While, ast.Try, ast.ExceptHandler, ast.With, ast.AsyncFor, ast.AsyncWith, ast.IfExp)):
                     complexity += 1
                 elif isinstance(child, ast.BoolOp):
@@ -133,6 +145,7 @@ class ASTAnalyzer(ast.NodeVisitor):
         # Walk body to evaluate internal nodes (like blocks for nesting, and magic numbers)
         self.generic_visit(node)
         self.current_function = prev_function
+        self.current_depth = prev_depth
 
     def visit_ClassDef(self, node: ast.ClassDef):
         # 5. Missing Docstring Check for classes
@@ -212,3 +225,5 @@ class ASTAnalyzer(ast.NodeVisitor):
     def visit_While(self, node: ast.While): self._handle_block(node)
     def visit_Try(self, node: ast.Try): self._handle_block(node)
     def visit_With(self, node: ast.With): self._handle_block(node)
+    def visit_AsyncFor(self, node: ast.AsyncFor): self._handle_block(node)
+    def visit_AsyncWith(self, node: ast.AsyncWith): self._handle_block(node)
