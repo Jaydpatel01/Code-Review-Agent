@@ -50,7 +50,13 @@ rules:
     enabled: true
     max_cyclomatic_complexity: 10
     max_function_length: 50
+  nesting:
+    enabled: true
     max_nesting_depth: 4
+  mutable_defaults:
+    enabled: true
+  magic_numbers:
+    enabled: false
   security:
     enabled: true
   style:
@@ -61,6 +67,48 @@ rules:
 output:
   format: pretty              # pretty | json | github
   show_suggestions: true
+```
+
+---
+
+## Static Analysis (AST & Tree-sitter)
+
+Before sending code to the LLM, the reviewer runs deterministic static analysis. This ensures fast, zero-cost, hallucination-free feedback for structural issues. 
+
+For **Python**, it uses the built-in `ast` module. For **JavaScript, TypeScript, and Java**, it uses pre-compiled `tree-sitter` binaries.
+
+### Supported Checks
+1. **Cyclomatic Complexity**: > 10 (MEDIUM), > 15 (HIGH).
+2. **Function Length**: > 50 lines (MEDIUM).
+3. **Nesting Depth**: > 4 levels (MEDIUM), > 6 levels (HIGH).
+4. **Mutable Default Arguments**: (Python only) High severity logic flaw.
+5. **Missing Docstrings**: Checks public functions and classes (LOW).
+6. **Magic Numbers**: Numeric literals without a named constant (INFO).
+
+### Example Output (`source` attribute)
+When you run the reviewer, findings will indicate where they came from. Static checks take precedence—if the LLM and AST both flag the same line for complexity, the LLM finding is discarded.
+
+```json
+{
+  "file_path": "src/app.py",
+  "line_number": 10,
+  "severity": "HIGH",
+  "category": "complexity",
+  "message": "Extremely deep nesting (7 levels).",
+  "suggestion": "Extract nested blocks into separate functions.",
+  "source": "ast"
+}
+```
+```json
+{
+  "file_path": "src/app.py",
+  "line_number": 12,
+  "severity": "HIGH",
+  "category": "security",
+  "message": "Hardcoded AWS Access Key.",
+  "suggestion": "Use an environment variable.",
+  "source": "llm"
+}
 ```
 
 ---
