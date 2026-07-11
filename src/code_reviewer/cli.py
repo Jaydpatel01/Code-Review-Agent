@@ -263,5 +263,30 @@ def review_diff_cmd(
         console.print(f"{total_findings} findings · reviewed in {elapsed:.1f}s · {settings.model}")
 
 
+@app.command("serve")
+def serve_cmd(
+    host: str = typer.Option("0.0.0.0", "--host", help="Host to bind to"),
+    port: int = typer.Option(8000, "--port", "-p", help="Port to listen on"),
+    reload: bool = typer.Option(False, "--reload", help="Enable auto-reload for development"),
+):
+    """Start the FastAPI webhook server for GitHub PR bot mode."""
+    try:
+        import uvicorn
+    except ImportError:
+        console.print("[red]Error: uvicorn is not installed. Run: uv sync[/red]")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"[bold green]Starting AI Code Reviewer webhook server[/bold green] "
+        f"on [cyan]http://{host}:{port}[/cyan]"
+    )
+    uvicorn.run(
+        "code_reviewer.api.main:app",
+        host=host,
+        port=port,
+        reload=reload,
+    )
+
+
 if __name__ == "__main__":
     app()
