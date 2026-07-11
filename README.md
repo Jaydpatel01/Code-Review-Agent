@@ -169,3 +169,62 @@ Run the test suite with coverage reporting:
 ```bash
 uv run pytest --cov=src
 ```
+
+---
+
+## GitHub PR Bot Setup
+
+The reviewer can run as a GitHub webhook bot that automatically reviews pull requests and posts inline comments.
+
+### 1. Authentication — Personal Access Token (PAT)
+
+Create a fine-grained PAT at **GitHub → Settings → Developer settings → Personal access tokens** with:
+- **Contents**: Read-only
+- **Pull requests**: Read and Write
+
+Set it as a repository secret named `GITHUB_TOKEN` (or use a separate `REVIEWER_TOKEN` to avoid conflicts with the built-in Actions token).
+
+### 2. Configure the Webhook
+
+In your target repository go to **Settings → Webhooks → Add webhook**:
+
+| Field | Value |
+|---|---|
+| Payload URL | `https://<your-server>/webhook` |
+| Content type | `application/json` |
+| Secret | A strong random string (save it — you'll need it next) |
+| Events | ✅ Pull requests |
+
+### 3. Set Server Environment Variables
+
+On your server (or in your deployment config):
+
+```env
+WEBHOOK_SECRET=<the secret from step 2>
+GITHUB_TOKEN=<your PAT from step 1>
+GEMINI_API_KEY=<your LLM key>
+```
+
+### 4. Start the Server
+
+```bash
+uv run code-reviewer serve --host 0.0.0.0 --port 8000
+```
+
+Or with auto-reload during development:
+```bash
+uv run code-reviewer serve --reload
+```
+
+### 5. GitHub Actions — Automatic Self-Review
+
+The included [pr_review.yml](.github/workflows/pr_review.yml) workflow runs the reviewer against every PR to `main` using the `--output github` format (workflow annotations).
+
+Add these secrets to your repository (**Settings → Secrets → Actions**):
+- `GEMINI_API_KEY` or `ANTHROPIC_API_KEY`
+
+The workflow uses:
+```
+${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
+```
+to review exactly the changed commits, not the entire branch history.
