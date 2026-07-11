@@ -1,0 +1,37 @@
+{
+  "action": "opened",
+  "number": 42,
+  "pull_request": {
+    "number": 42,
+    "title": "feat: add awesome feature",
+    "body": "This PR adds an awesome new feature.",
+    "head": {
+      "sha": "abc123def456abc123def456abc123def456abc1",
+      "ref": "feature/awesome",
+      "label": "owner:feature/awesome"
+    },
+    "base": {
+      "sha": "000000000000000000000000000000000000dead",
+      "ref": "main",
+      "label": "owner:main"
+    },
+    "user": {
+      "login": "octocat"
+    },
+    "state": "open",
+    "merged": false,
+    "draft": false
+  },
+  "repository": {
+    "id": 123456789,
+    "name": "awesome-repo",
+    "full_name": "owner/awesome-repo",
+    "private": false,
+    "owner": {
+      "login": "owner"
+    }
+  },
+  "sender": {
+    "login": "octocat"
+  }
+}
