@@ -13,35 +13,44 @@ load_dotenv()
 
 class ComplexityRules(BaseModel):
     """Rules for code complexity checks."""
-
     enabled: bool = True
     max_cyclomatic_complexity: int = 10
     max_function_length: int = 50
+
+class NestingRules(BaseModel):
+    """Rules for code nesting depth."""
+    enabled: bool = True
     max_nesting_depth: int = 4
 
+class MutableDefaultsRules(BaseModel):
+    """Rules for mutable default arguments."""
+    enabled: bool = True
+
+class MagicNumbersRules(BaseModel):
+    """Rules for magic numbers."""
+    enabled: bool = False
 
 class SecurityRules(BaseModel):
     """Rules for security analysis."""
-
     enabled: bool = True
 
 
 class StyleRules(BaseModel):
     """Rules for style checks."""
-
     enabled: bool = True
 
 
 class DocsRules(BaseModel):
     """Rules for checking documentation coverage."""
-
     enabled: bool = False
 
 
 class RulesSettings(BaseModel):
     """Nested rules configurations."""
-
     complexity: ComplexityRules = Field(default_factory=ComplexityRules)
+    nesting: NestingRules = Field(default_factory=NestingRules)
+    mutable_defaults: MutableDefaultsRules = Field(default_factory=MutableDefaultsRules)
+    magic_numbers: MagicNumbersRules = Field(default_factory=MagicNumbersRules)
     security: SecurityRules = Field(default_factory=SecurityRules)
     style: StyleRules = Field(default_factory=StyleRules)
     docs: DocsRules = Field(default_factory=DocsRules)
@@ -49,14 +58,12 @@ class RulesSettings(BaseModel):
 
 class OutputSettings(BaseModel):
     """Configuration for CLI output formats."""
-
     format: Literal["pretty", "json", "github"] = "pretty"
     show_suggestions: bool = True
 
 
 class Settings(BaseSettings):
     """Main Settings configuration class backed by pydantic-settings."""
-
     model: str = "gemini/gemini-3.1-flash-lite"
     max_tokens: int = 2048
     severity_threshold: Literal["HIGH", "MEDIUM", "LOW", "INFO"] = "MEDIUM"

@@ -63,27 +63,28 @@ class StaticAnalyzer:
             is_block = "block" in node.type or "statement_block" in node.type
             if is_block:
                 depth += 1
-                max_depth = self.settings.rules.complexity.max_nesting_depth
-                if depth > 6:
-                    findings.append(Finding(
-                        file_path=file_path,
-                        line_number=node.start_point[0] + 1,
-                        severity="HIGH",
-                        category="complexity",
-                        message=f"Extremely deep nesting ({depth} levels).",
-                        suggestion="Extract nested blocks into separate functions.",
-                        source="ast"
-                    ))
-                elif depth > max_depth:
-                    findings.append(Finding(
-                        file_path=file_path,
-                        line_number=node.start_point[0] + 1,
-                        severity="MEDIUM",
-                        category="complexity",
-                        message=f"Deep nesting ({depth} levels).",
-                        suggestion="Extract nested blocks into separate functions.",
-                        source="ast"
-                    ))
+                if self.settings.rules.nesting.enabled:
+                    max_depth = self.settings.rules.nesting.max_nesting_depth
+                    if depth > 6:
+                        findings.append(Finding(
+                            file_path=file_path,
+                            line_number=node.start_point[0] + 1,
+                            severity="HIGH",
+                            category="complexity",
+                            message=f"Extremely deep nesting ({depth} levels).",
+                            suggestion="Extract nested blocks into separate functions.",
+                            source="ast"
+                        ))
+                    elif depth > max_depth:
+                        findings.append(Finding(
+                            file_path=file_path,
+                            line_number=node.start_point[0] + 1,
+                            severity="MEDIUM",
+                            category="complexity",
+                            message=f"Deep nesting ({depth} levels).",
+                            suggestion="Extract nested blocks into separate functions.",
+                            source="ast"
+                        ))
 
             for child in node.children:
                 walk(child, depth)
@@ -108,105 +109,109 @@ class StaticAnalyzer:
         
         for func in funcs:
             # Check Function Length
-            length = func.end_point[0] - func.start_point[0]
-            if length > self.settings.rules.complexity.max_function_length:
-                findings.append(Finding(
-                    file_path=file_path,
-                    line_number=func.start_point[0] + 1,
-                    severity="MEDIUM",
-                    category="complexity",
-                    message=f"Function is too long ({length} lines).",
-                    suggestion="Extract logic into smaller helper functions.",
-                    source="ast"
-                ))
+            if self.settings.rules.complexity.enabled:
+                length = func.end_point[0] - func.start_point[0]
+                if length > self.settings.rules.complexity.max_function_length:
+                    findings.append(Finding(
+                        file_path=file_path,
+                        line_number=func.start_point[0] + 1,
+                        severity="MEDIUM",
+                        category="complexity",
+                        message=f"Function is too long ({length} lines).",
+                        suggestion="Extract logic into smaller helper functions.",
+                        source="ast"
+                    ))
 
             # Check Cyclomatic Complexity
-            cc = 1
-            def count_cc(node):
-                nonlocal cc
-                branch_nodes = ["if_statement", "for_statement", "while_statement", "catch_clause", "ternary_expression", "&&", "||"]
-                if node.type in branch_nodes:
-                    cc += 1
-                if node.type == "binary_expression":
-                    op = node.child_by_field_name("operator")
-                    if op and op.type in ["&&", "||"]:
+            if self.settings.rules.complexity.enabled:
+                cc = 1
+                def count_cc(node):
+                    nonlocal cc
+                    branch_nodes = ["if_statement", "for_statement", "while_statement", "catch_clause", "ternary_expression", "&&", "||"]
+                    if node.type in branch_nodes:
                         cc += 1
-                        
-                for child in node.children:
-                    # Do not leak complexity calculations into inner functions
-                    if "function" not in child.type and "method" not in child.type:
-                        count_cc(child)
-            
-            for child in func.children:
-                count_cc(child)
+                    if node.type == "binary_expression":
+                        op = node.child_by_field_name("operator")
+                        if op and op.type in ["&&", "||"]:
+                            cc += 1
+                            
+                    for child in node.children:
+                        # Do not leak complexity calculations into inner functions
+                        if "function" not in child.type and "method" not in child.type:
+                            count_cc(child)
                 
-            max_cc = self.settings.rules.complexity.max_cyclomatic_complexity
-            if cc > 15:
-                findings.append(Finding(
-                    file_path=file_path,
-                    line_number=func.start_point[0] + 1,
-                    severity="HIGH",
-                    category="complexity",
-                    message=f"Function has very high cyclomatic complexity ({cc}).",
-                    suggestion="Refactor to simplify logic and reduce branching.",
-                    source="ast"
-                ))
-            elif cc > max_cc:
-                findings.append(Finding(
-                    file_path=file_path,
-                    line_number=func.start_point[0] + 1,
-                    severity="MEDIUM",
-                    category="complexity",
-                    message=f"Function has high cyclomatic complexity ({cc}).",
-                    suggestion="Refactor to simplify logic and reduce branching.",
-                    source="ast"
-                ))
+                for child in func.children:
+                    count_cc(child)
+                    
+                max_cc = self.settings.rules.complexity.max_cyclomatic_complexity
+                if cc > 15:
+                    findings.append(Finding(
+                        file_path=file_path,
+                        line_number=func.start_point[0] + 1,
+                        severity="HIGH",
+                        category="complexity",
+                        message=f"Function has very high cyclomatic complexity ({cc}).",
+                        suggestion="Refactor to simplify logic and reduce branching.",
+                        source="ast"
+                    ))
+                elif cc > max_cc:
+                    findings.append(Finding(
+                        file_path=file_path,
+                        line_number=func.start_point[0] + 1,
+                        severity="MEDIUM",
+                        category="complexity",
+                        message=f"Function has high cyclomatic complexity ({cc}).",
+                        suggestion="Refactor to simplify logic and reduce branching.",
+                        source="ast"
+                    ))
                 
             # Check Missing Docstrings (JavaDoc/JSDoc)
-            prev = func.prev_sibling
-            has_doc = False
-            while prev and prev.type == "comment":
-                text = source_code[prev.start_byte:prev.end_byte]
-                if text.startswith("/**"):
-                    has_doc = True
-                    break
-                prev = prev.prev_sibling
-            
-            if not has_doc:
-                name_node = func.child_by_field_name("name")
-                if name_node:
-                    name = source_code[name_node.start_byte:name_node.end_byte]
-                    if not name.startswith("_"):
-                        findings.append(Finding(
-                            file_path=file_path,
-                            line_number=func.start_point[0] + 1,
-                            severity="LOW",
-                            category="docs",
-                            message=f"Missing docstring in public function '{name}'.",
-                            suggestion="Add a docstring explaining the function's purpose.",
-                            source="ast"
-                        ))
-
-            # Check Magic Numbers
-            def find_bad_nodes(node, in_assign=False):
-                if node.type in ["assignment_expression", "variable_declarator"]:
-                    in_assign = True
+            if self.settings.rules.docs.enabled:
+                prev = func.prev_sibling
+                has_doc = False
+                while prev and prev.type == "comment":
+                    text = source_code[prev.start_byte:prev.end_byte]
+                    if text.startswith("/**"):
+                        has_doc = True
+                        break
+                    prev = prev.prev_sibling
                 
-                if node.type == "number":
-                    val_str = source_code[node.start_byte:node.end_byte]
-                    if val_str not in ["0", "1"]:
-                        if not in_assign:
+                if not has_doc:
+                    name_node = func.child_by_field_name("name")
+                    if name_node:
+                        name = source_code[name_node.start_byte:name_node.end_byte]
+                        if not name.startswith("_"):
                             findings.append(Finding(
                                 file_path=file_path,
-                                line_number=node.start_point[0] + 1,
-                                severity="INFO",
-                                category="style",
-                                message=f"Magic number {val_str} found.",
-                                suggestion="Extract this number into a named constant.",
+                                line_number=func.start_point[0] + 1,
+                                severity="LOW",
+                                category="docs",
+                                message=f"Missing docstring in public function '{name}'.",
+                                suggestion="Add a docstring explaining the function's purpose.",
                                 source="ast"
                             ))
 
-                for child in node.children:
-                    find_bad_nodes(child, in_assign)
-            
-            find_bad_nodes(func)
+            # Check Magic Numbers
+            if self.settings.rules.magic_numbers.enabled:
+                def find_bad_nodes(node, in_assign=False):
+                    if node.type in ["assignment_expression", "variable_declarator"]:
+                        in_assign = True
+                    
+                    if node.type == "number":
+                        val_str = source_code[node.start_byte:node.end_byte]
+                        if val_str not in ["0", "1"]:
+                            if not in_assign:
+                                findings.append(Finding(
+                                    file_path=file_path,
+                                    line_number=node.start_point[0] + 1,
+                                    severity="INFO",
+                                    category="style",
+                                    message=f"Magic number {val_str} found.",
+                                    suggestion="Extract this number into a named constant.",
+                                    source="ast"
+                                ))
+
+                    for child in node.children:
+                        find_bad_nodes(child, in_assign)
+                
+                find_bad_nodes(func)

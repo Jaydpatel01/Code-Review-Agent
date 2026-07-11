@@ -51,3 +51,30 @@ def test_settings_env_override():
         settings = Settings()
         assert settings.model == "env-model"
         assert settings.severity_threshold == "LOW"
+
+def test_config_disable_produces_zero_findings():
+    """Test that disabling a rule in config produces zero findings."""
+    from code_reviewer.analyzers.ast_analyzer import ASTAnalyzer
+    
+    settings = Settings()
+    # Disable complexity and nesting
+    settings.rules.complexity.enabled = False
+    settings.rules.nesting.enabled = False
+    
+    code = """
+def very_complex():
+    if True:
+        if True:
+            if True:
+                if True:
+                    if True:
+                        if True:
+                            if True:
+                                pass
+"""
+    analyzer = ASTAnalyzer("test.py", settings)
+    findings = analyzer.analyze(code)
+    
+    # Normally this would trigger high complexity and deep nesting
+    # But since they are disabled, findings should be empty
+    assert len(findings) == 0

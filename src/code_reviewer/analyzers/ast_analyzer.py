@@ -61,70 +61,74 @@ class ASTAnalyzer(ast.NodeVisitor):
         self.current_function = node
         
         # 1. Function Length Check
-        if hasattr(node, 'end_lineno') and hasattr(node, 'lineno'):
-            length = node.end_lineno - node.lineno
-            if length > self.settings.rules.complexity.max_function_length:
+        if self.settings.rules.complexity.enabled:
+            if hasattr(node, 'end_lineno') and hasattr(node, 'lineno'):
+                length = node.end_lineno - node.lineno
+                if length > self.settings.rules.complexity.max_function_length:
+                    self.report_finding(
+                        node,
+                        severity="MEDIUM",
+                        category="complexity",
+                        message=f"Function '{node.name}' is too long ({length} lines).",
+                        suggestion="Extract logic into smaller helper functions."
+                    )
+                
+        # 2. Missing Docstring Check
+        if self.settings.rules.docs.enabled:
+            if not node.name.startswith("_") or node.name == "__init__":
+                if not ast.get_docstring(node):
+                    self.report_finding(
+                        node,
+                        severity="LOW",
+                        category="docs",
+                        message=f"Missing docstring in public function '{node.name}'.",
+                        suggestion="Add a docstring explaining the function's purpose."
+                    )
+                
+        # 3. Mutable Defaults Check
+        if self.settings.rules.mutable_defaults.enabled:
+            if hasattr(node, 'args'):
+                for default in node.args.defaults + getattr(node.args, 'kw_defaults', []):
+                    if default is None:
+                        continue
+                    if isinstance(default, (ast.List, ast.Dict, ast.Set)):
+                        self.report_finding(
+                            default,
+                            severity="HIGH",
+                            category="logic",
+                            message=f"Mutable default argument found in '{node.name}'.",
+                            suggestion="Use None as default and initialize the mutable object inside the function body."
+                        )
+                    
+        # 4. Cyclomatic Complexity Check (Approximation)
+        if self.settings.rules.complexity.enabled:
+            complexity = 1
+            for child in ast.walk(node):
+                if isinstance(child, (ast.If, ast.For, ast.While, ast.Try, ast.ExceptHandler, ast.With, ast.AsyncFor, ast.AsyncWith, ast.IfExp)):
+                    complexity += 1
+                elif isinstance(child, ast.BoolOp):
+                    complexity += len(child.values) - 1
+                elif isinstance(child, ast.comprehension):
+                    # +1 for the implicit loop, +1 for each 'if' condition
+                    complexity += 1 + len(child.ifs)
+                    
+            max_cc = self.settings.rules.complexity.max_cyclomatic_complexity
+            if complexity > 15:
+                self.report_finding(
+                    node,
+                    severity="HIGH",
+                    category="complexity",
+                    message=f"Function '{node.name}' has very high cyclomatic complexity ({complexity}).",
+                    suggestion="Refactor to simplify logic and reduce branching."
+                )
+            elif complexity > max_cc:
                 self.report_finding(
                     node,
                     severity="MEDIUM",
                     category="complexity",
-                    message=f"Function '{node.name}' is too long ({length} lines).",
-                    suggestion="Extract logic into smaller helper functions."
+                    message=f"Function '{node.name}' has high cyclomatic complexity ({complexity}).",
+                    suggestion="Refactor to simplify logic and reduce branching."
                 )
-                
-        # 2. Missing Docstring Check
-        if not node.name.startswith("_") or node.name == "__init__":
-            if not ast.get_docstring(node):
-                self.report_finding(
-                    node,
-                    severity="LOW",
-                    category="docs",
-                    message=f"Missing docstring in public function '{node.name}'.",
-                    suggestion="Add a docstring explaining the function's purpose."
-                )
-                
-        # 3. Mutable Defaults Check
-        if hasattr(node, 'args'):
-            for default in node.args.defaults + getattr(node.args, 'kw_defaults', []):
-                if default is None:
-                    continue
-                if isinstance(default, (ast.List, ast.Dict, ast.Set)):
-                    self.report_finding(
-                        default,
-                        severity="HIGH",
-                        category="logic",
-                        message=f"Mutable default argument found in '{node.name}'.",
-                        suggestion="Use None as default and initialize the mutable object inside the function body."
-                    )
-                    
-        # 4. Cyclomatic Complexity Check (Approximation)
-        complexity = 1
-        for child in ast.walk(node):
-            if isinstance(child, (ast.If, ast.For, ast.While, ast.Try, ast.ExceptHandler, ast.With, ast.AsyncFor, ast.AsyncWith, ast.IfExp)):
-                complexity += 1
-            elif isinstance(child, ast.BoolOp):
-                complexity += len(child.values) - 1
-            elif isinstance(child, ast.comprehension):
-                # +1 for the implicit loop, +1 for each 'if' condition
-                complexity += 1 + len(child.ifs)
-                
-        max_cc = self.settings.rules.complexity.max_cyclomatic_complexity
-        if complexity > 15:
-            self.report_finding(
-                node,
-                severity="HIGH",
-                category="complexity",
-                message=f"Function '{node.name}' has very high cyclomatic complexity ({complexity}).",
-                suggestion="Refactor to simplify logic and reduce branching."
-            )
-        elif complexity > max_cc:
-            self.report_finding(
-                node,
-                severity="MEDIUM",
-                category="complexity",
-                message=f"Function '{node.name}' has high cyclomatic complexity ({complexity}).",
-                suggestion="Refactor to simplify logic and reduce branching."
-            )
 
         # Walk body to evaluate internal nodes (like blocks for nesting, and magic numbers)
         self.generic_visit(node)
@@ -132,15 +136,16 @@ class ASTAnalyzer(ast.NodeVisitor):
 
     def visit_ClassDef(self, node: ast.ClassDef):
         # 5. Missing Docstring Check for classes
-        if not node.name.startswith("_"):
-            if not ast.get_docstring(node):
-                self.report_finding(
-                    node,
-                    severity="LOW",
-                    category="docs",
-                    message=f"Missing docstring in public class '{node.name}'.",
-                    suggestion="Add a docstring explaining the class's purpose."
-                )
+        if self.settings.rules.docs.enabled:
+            if not node.name.startswith("_"):
+                if not ast.get_docstring(node):
+                    self.report_finding(
+                        node,
+                        severity="LOW",
+                        category="docs",
+                        message=f"Missing docstring in public class '{node.name}'.",
+                        suggestion="Add a docstring explaining the class's purpose."
+                    )
         self.generic_visit(node)
 
     def visit_Assign(self, node: ast.Assign):
@@ -157,45 +162,47 @@ class ASTAnalyzer(ast.NodeVisitor):
     def visit_Constant(self, node: ast.Constant):
         # 6. Magic Numbers
         # Excludes 0, 1, and booleans
-        if isinstance(node.value, (int, float)) and type(node.value) is not bool:
-            if node.value not in [0, 1]:
-                is_constant_assign = False
-                if self.in_assign:
-                    is_constant_assign = any(t.isupper() for t in self.assign_targets)
-                
-                # We also might want to check if it's outside a function (like module level constant).
-                # But the rule applies to any naked magic number not assigned to an uppercase var.
-                if not is_constant_assign:
-                    self.report_finding(
-                        node,
-                        severity="INFO",
-                        category="style",
-                        message=f"Magic number {node.value} found.",
-                        suggestion="Extract this number into a named constant (e.g., MAX_ITEMS = ...)."
-                    )
+        if self.settings.rules.magic_numbers.enabled:
+            if isinstance(node.value, (int, float)) and type(node.value) is not bool:
+                if node.value not in [0, 1]:
+                    is_constant_assign = False
+                    if self.in_assign:
+                        is_constant_assign = any(t.isupper() for t in self.assign_targets)
+                    
+                    # We also might want to check if it's outside a function (like module level constant).
+                    # But the rule applies to any naked magic number not assigned to an uppercase var.
+                    if not is_constant_assign:
+                        self.report_finding(
+                            node,
+                            severity="INFO",
+                            category="style",
+                            message=f"Magic number {node.value} found.",
+                            suggestion="Extract this number into a named constant (e.g., MAX_ITEMS = ...)."
+                        )
         self.generic_visit(node)
 
     # --- Depth calculations for Blocks ---
     def _handle_block(self, node: ast.AST):
         self.current_depth += 1
         
-        max_depth = self.settings.rules.complexity.max_nesting_depth
-        if self.current_depth > 6:
-            self.report_finding(
-                node,
-                severity="HIGH",
-                category="complexity",
-                message=f"Extremely deep nesting ({self.current_depth} levels).",
-                suggestion="Extract nested blocks into separate functions."
-            )
-        elif self.current_depth > max_depth:
-            self.report_finding(
-                node,
-                severity="MEDIUM",
-                category="complexity",
-                message=f"Deep nesting ({self.current_depth} levels).",
-                suggestion="Extract nested blocks into separate functions or return early."
-            )
+        if self.settings.rules.nesting.enabled:
+            max_depth = self.settings.rules.nesting.max_nesting_depth
+            if self.current_depth > 6:
+                self.report_finding(
+                    node,
+                    severity="HIGH",
+                    category="complexity",
+                    message=f"Extremely deep nesting ({self.current_depth} levels).",
+                    suggestion="Extract nested blocks into separate functions."
+                )
+            elif self.current_depth > max_depth:
+                self.report_finding(
+                    node,
+                    severity="MEDIUM",
+                    category="complexity",
+                    message=f"Deep nesting ({self.current_depth} levels).",
+                    suggestion="Extract nested blocks into separate functions or return early."
+                )
             
         self.generic_visit(node)
         self.current_depth -= 1
