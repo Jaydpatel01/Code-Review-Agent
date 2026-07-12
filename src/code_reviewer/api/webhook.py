@@ -70,7 +70,7 @@ async def _run_pr_review(repo_name: str, pr_number: int) -> None:
 
         github_token = os.environ.get("GITHUB_TOKEN", "")
         settings = load_settings()
-        llm_client = LLMClient(settings)
+        llm_client = LLMClient(model=settings.model, max_tokens=settings.max_tokens)
         github_client = GitHubClient(github_token)
 
         reviewer = PRReviewer(
