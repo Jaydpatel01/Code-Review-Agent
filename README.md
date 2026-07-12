@@ -25,7 +25,7 @@ This project utilizes `uv` for python environment and dependency management.
 
 2. **Sync the virtual environment and install packages**:
    ```bash
-   uv sync --extra dev
+   uv sync
    ```
 
 3. **Configure API Keys**:

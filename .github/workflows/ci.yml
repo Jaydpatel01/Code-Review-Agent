@@ -23,7 +23,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync
 
       - name: Run tests
         run: uv run pytest --cov=src --cov-report=term-missing
