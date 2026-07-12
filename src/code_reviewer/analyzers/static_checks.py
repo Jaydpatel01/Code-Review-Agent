@@ -39,7 +39,7 @@ class StaticAnalyzer:
             
         # 2. Fall back to Tree-sitter for non-Python languages
         lang = None
-        if ext in [".js", ".ts", ".jsx", ".tsx"]:
+        if ext in [".js", ".jsx"]:
             lang = "javascript"
         elif ext == ".java":
             lang = "java"

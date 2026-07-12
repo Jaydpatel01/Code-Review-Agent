@@ -75,7 +75,7 @@ output:
 
 Before sending code to the LLM, the reviewer runs deterministic static analysis. This ensures fast, zero-cost, hallucination-free feedback for structural issues. 
 
-For **Python**, it uses the built-in `ast` module. For **JavaScript, TypeScript, and Java**, it uses pre-compiled `tree-sitter` binaries.
+For **Python**, it uses the built-in `ast` module. For **JavaScript and Java**, it uses pre-compiled `tree-sitter` binaries.
 
 ### Supported Checks
 1. **Cyclomatic Complexity**: > 10 (MEDIUM), > 15 (HIGH).
