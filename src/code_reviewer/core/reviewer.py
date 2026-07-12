@@ -44,6 +44,19 @@ def combine_findings(static: List[Finding], llm: List[Finding]) -> List[Finding]
     return combined
 
 
+def _is_rule_enabled(settings: Settings, category: str) -> bool:
+    """Helper to check if a rule category is enabled in settings."""
+    if category == "complexity" and not settings.rules.complexity.enabled:
+        return False
+    if category == "security" and not settings.rules.security.enabled:
+        return False
+    if category == "style" and not settings.rules.style.enabled:
+        return False
+    if category == "docs" and not settings.rules.docs.enabled:
+        return False
+    return True
+
+
 class FileReviewer:
     """Performs code review on single files using static checks and LiteLLM."""
 
@@ -65,8 +78,15 @@ class FileReviewer:
         lines = content.splitlines()
         lines_reviewed = len(lines)
         
+        min_severity_level = SEVERITY_ORDER.get(self.settings.severity_threshold, 3)
+
         # 1. Run Static Analysis First
-        static_findings = self.static_analyzer.analyze_file(file_path, content)
+        raw_static = self.static_analyzer.analyze_file(file_path, content)
+        static_findings = [
+            f for f in raw_static
+            if SEVERITY_ORDER.get(f.severity, 1) >= min_severity_level
+            and _is_rule_enabled(self.settings, f.category)
+        ]
 
         # 2. Run LLM Analysis
         messages = [
@@ -83,26 +103,7 @@ class FileReviewer:
         )
 
         llm_findings = []
-        min_severity_level = SEVERITY_ORDER.get(self.settings.severity_threshold, 3)
-
-        for llm_finding in response.findings:
-            severity = llm_finding.severity
-            category = llm_finding.category
-
-            if SEVERITY_ORDER.get(severity, 1) < min_severity_level:
-                continue
-
-            rule_enabled = True
-            if category == "complexity" and not self.settings.rules.complexity.enabled:
-                rule_enabled = False
-            elif category == "security" and not self.settings.rules.security.enabled:
-                rule_enabled = False
-            elif category == "style" and not self.settings.rules.style.enabled:
-                rule_enabled = False
-            elif category == "docs" and not self.settings.rules.docs.enabled:
-                rule_enabled = False
-
-            if not rule_enabled:
+            if not _is_rule_enabled(self.settings, category):
                 continue
 
             llm_findings.append(
@@ -149,7 +150,12 @@ class DiffReviewer:
             if os.path.exists(file_path):
                 with open(file_path, "r", encoding="utf-8") as f:
                     content = f.read()
-                static_findings = self.static_analyzer.analyze_file(file_path, content)
+                raw_static = self.static_analyzer.analyze_file(file_path, content)
+                static_findings = [
+                    f for f in raw_static
+                    if SEVERITY_ORDER.get(f.severity, 1) >= min_severity_level
+                    and _is_rule_enabled(self.settings, f.category)
+                ]
         except Exception:
             pass # If file doesn't exist on disk (deleted), static analysis is skipped.
 
@@ -202,17 +208,7 @@ class DiffReviewer:
                         if SEVERITY_ORDER.get(severity, 1) < min_severity_level:
                             continue
 
-                        rule_enabled = True
-                        if category == "complexity" and not self.settings.rules.complexity.enabled:
-                            rule_enabled = False
-                        elif category == "security" and not self.settings.rules.security.enabled:
-                            rule_enabled = False
-                        elif category == "style" and not self.settings.rules.style.enabled:
-                            rule_enabled = False
-                        elif category == "docs" and not self.settings.rules.docs.enabled:
-                            rule_enabled = False
-
-                        if not rule_enabled:
+                        if not _is_rule_enabled(self.settings, category):
                             continue
 
                         reported_line = llm_finding.line_number
