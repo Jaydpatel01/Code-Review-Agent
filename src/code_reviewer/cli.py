@@ -83,12 +83,19 @@ def review_file_cmd(
     elif format_type == "github":
         for finding in result.findings:
             line_str = f"line={finding.line_number}" if finding.line_number else ""
-            github_sev = "error" if finding.severity == "HIGH" else "warning"
-            title = f"{finding.category} ({finding.severity})"
-            console.print(
-                f"::{github_sev} file={finding.file_path},{line_str},title={title}::"
-                f"{finding.message} -> {finding.suggestion}"
-            )
+            if finding.severity == "HIGH":
+                github_sev = "error"
+            elif finding.severity == "MEDIUM":
+                github_sev = "warning"
+            else:
+                github_sev = "notice"
+            
+            title = finding.category
+            msg = finding.message
+            if finding.suggestion:
+                msg += f" {finding.suggestion}"
+                
+            print(f"::{github_sev} file={finding.file_path},{line_str},title={title}::{msg}")
         console.print(f"Reviewed {file_path}: {len(result.findings)} findings.")
     else:  # pretty
         lines = []
@@ -219,12 +226,19 @@ def review_diff_cmd(
         for res in all_results:
             for finding in res.findings:
                 line_str = f"line={finding.line_number}" if finding.line_number else ""
-                github_sev = "error" if finding.severity == "HIGH" else "warning"
-                title = f"{finding.category} ({finding.severity})"
-                console.print(
-                    f"::{github_sev} file={finding.file_path},{line_str},title={title}::"
-                    f"{finding.message} -> {finding.suggestion}"
-                )
+                if finding.severity == "HIGH":
+                    github_sev = "error"
+                elif finding.severity == "MEDIUM":
+                    github_sev = "warning"
+                else:
+                    github_sev = "notice"
+                
+                title = finding.category
+                msg = finding.message
+                if finding.suggestion:
+                    msg += f" {finding.suggestion}"
+                    
+                print(f"::{github_sev} file={finding.file_path},{line_str},title={title}::{msg}")
         console.print(f"Reviewed {len(all_results)} files: {total_findings} findings.")
     else:  # pretty
         for res in all_results:
