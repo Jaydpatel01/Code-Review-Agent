@@ -226,3 +226,107 @@ class TestLogicAgent:
         result = agent(_make_state("logic"))
         assert result["logic_findings"] == []
         assert "logic" in result["error"]
+
+
+# ===========================================================================
+# StyleAgent
+# ===========================================================================
+
+class TestStyleAgent:
+    @pytest.fixture
+    def agent(self):
+        from code_reviewer.agents.style import StyleAgent
+        return StyleAgent()
+
+    def test_name(self, agent):
+        assert agent.name == "style"
+
+    def test_category(self, agent):
+        assert agent.category == "style"
+
+    def test_system_prompt_mandatory_instructions(self, agent):
+        _assert_mandatory_instructions(agent.system_prompt)
+
+    def test_system_prompt_covers_domain(self, agent):
+        prompt = agent.system_prompt.lower()
+        for keyword in ["misleading", "single-letter", "responsibility", "dead", "commented"]:
+            assert keyword in prompt, f"Domain keyword {keyword!r} missing from style prompt"
+
+    def test_prompt_excludes_complexity(self, agent):
+        """Style prompt must explicitly exclude complexity/nesting to avoid AST overlap."""
+        assert "complexity" in agent.system_prompt.lower() or "nesting" in agent.system_prompt.lower()
+        assert "static analysis" in agent.system_prompt.lower() or "separately" in agent.system_prompt.lower()
+
+    def test_call_returns_correct_state_key(self, agent, mocker):
+        _mock_llm_response(mocker, [])
+        result = agent(_make_state("style"))
+        assert "style_findings" in result
+        assert isinstance(result["style_findings"], list)
+
+    def test_call_returns_error_key(self, agent, mocker):
+        _mock_llm_response(mocker, [])
+        result = agent(_make_state("style"))
+        assert "error" in result
+
+    def test_prompt_never_high_or_medium(self, agent):
+        """Style prompt must not allow HIGH or MEDIUM severity."""
+        assert "NEVER" in agent.system_prompt
+        assert "HIGH" not in agent.system_prompt or "NEVER use HIGH" in agent.system_prompt
+
+    def test_exception_returns_empty_and_error(self, agent, mocker):
+        mocker.patch("litellm.completion", side_effect=RuntimeError("timeout"))
+        result = agent(_make_state("style"))
+        assert result["style_findings"] == []
+        assert "style" in result["error"]
+
+
+# ===========================================================================
+# DocsAgent
+# ===========================================================================
+
+class TestDocsAgent:
+    @pytest.fixture
+    def agent(self):
+        from code_reviewer.agents.docs import DocsAgent
+        return DocsAgent()
+
+    def test_name(self, agent):
+        assert agent.name == "docs"
+
+    def test_category(self, agent):
+        assert agent.category == "docs"
+
+    def test_system_prompt_mandatory_instructions(self, agent):
+        _assert_mandatory_instructions(agent.system_prompt)
+
+    def test_system_prompt_covers_domain(self, agent):
+        prompt = agent.system_prompt.lower()
+        for keyword in ["contradict", "todo", "fixme", "lying", "function name"]:
+            assert keyword in prompt, f"Domain keyword {keyword!r} missing from docs prompt"
+
+    def test_prompt_excludes_missing_docstrings(self, agent):
+        """Docs prompt must explicitly state it does NOT flag missing docstrings."""
+        prompt = agent.system_prompt.lower()
+        assert "missing docstring" in prompt or "missing doc" in prompt
+
+    def test_call_returns_correct_state_key(self, agent, mocker):
+        _mock_llm_response(mocker, [])
+        result = agent(_make_state("docs"))
+        assert "docs_findings" in result
+        assert isinstance(result["docs_findings"], list)
+
+    def test_call_returns_error_key(self, agent, mocker):
+        _mock_llm_response(mocker, [])
+        result = agent(_make_state("docs"))
+        assert "error" in result
+
+    def test_prompt_never_high_or_medium(self, agent):
+        """Docs prompt must not allow HIGH or MEDIUM severity."""
+        assert "NEVER" in agent.system_prompt
+        assert "HIGH" not in agent.system_prompt or "NEVER use HIGH" in agent.system_prompt
+
+    def test_exception_returns_empty_and_error(self, agent, mocker):
+        mocker.patch("litellm.completion", side_effect=RuntimeError("timeout"))
+        result = agent(_make_state("docs"))
+        assert result["docs_findings"] == []
+        assert "docs" in result["error"]
