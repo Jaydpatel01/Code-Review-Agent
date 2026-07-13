@@ -8,9 +8,29 @@ treated as read-only by individual agent nodes.
 from __future__ import annotations
 
 from typing import Optional
-from typing_extensions import TypedDict
+from typing_extensions import TypedDict, Annotated
 
 from code_reviewer.core.models import DiffHunk, Finding
+
+
+def _keep_last_error(current: Optional[str], update: Optional[str]) -> Optional[str]:
+    """Reducer for the 'error' field in AgentState.
+
+    When five agents run in parallel they may all write to 'error'.
+    LangGraph requires a reducer for any key written by concurrent nodes.
+    This reducer returns the update value if it is non-None, otherwise
+    keeps the current value — i.e. the first real error wins.
+
+    Args:
+        current: The existing error value in the channel.
+        update:  The value being written by the current node.
+
+    Returns:
+        The update if non-None, else current.
+    """
+    if update is not None:
+        return update
+    return current
 
 
 class AgentState(TypedDict):
@@ -51,4 +71,4 @@ class AgentState(TypedDict):
     final_findings: list[Finding]
 
     # ---- error tracking ------------------------------------------------
-    error: Optional[str]
+    error: Annotated[Optional[str], _keep_last_error]
