@@ -178,3 +178,51 @@ class TestPerformanceAgent:
         assert result["performance_findings"] == []
         assert "performance" in result["error"]
 
+
+# ===========================================================================
+# LogicAgent
+# ===========================================================================
+
+class TestLogicAgent:
+    @pytest.fixture
+    def agent(self):
+        from code_reviewer.agents.logic import LogicAgent
+        return LogicAgent()
+
+    def test_name(self, agent):
+        assert agent.name == "logic"
+
+    def test_category(self, agent):
+        assert agent.category == "logic"
+
+    def test_system_prompt_mandatory_instructions(self, agent):
+        _assert_mandatory_instructions(agent.system_prompt)
+
+    def test_system_prompt_covers_domain(self, agent):
+        prompt = agent.system_prompt.lower()
+        for keyword in ["none", "off-by-one", "unreachable", "exception", "edge"]:
+            assert keyword in prompt, f"Domain keyword {keyword!r} missing from logic prompt"
+
+    def test_call_returns_correct_state_key(self, agent, mocker):
+        _mock_llm_response(mocker, [])
+        result = agent(_make_state("logic"))
+        assert "logic_findings" in result
+        assert isinstance(result["logic_findings"], list)
+
+    def test_call_returns_error_key(self, agent, mocker):
+        _mock_llm_response(mocker, [])
+        result = agent(_make_state("logic"))
+        assert "error" in result
+
+    def test_prompt_severity_high_and_medium_only(self, agent):
+        """Logic prompt must specify HIGH and MEDIUM, never LOW/INFO."""
+        prompt = agent.system_prompt
+        assert "HIGH" in prompt
+        assert "MEDIUM" in prompt
+        assert "NEVER" in prompt
+
+    def test_exception_returns_empty_and_error(self, agent, mocker):
+        mocker.patch("litellm.completion", side_effect=RuntimeError("timeout"))
+        result = agent(_make_state("logic"))
+        assert result["logic_findings"] == []
+        assert "logic" in result["error"]
