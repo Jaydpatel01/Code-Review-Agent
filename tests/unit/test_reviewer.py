@@ -67,44 +67,59 @@ def test_reviewer_filtering(mocker, tmp_path):
 
 
 def test_diff_reviewer_filtering(mocker):
-    """Test DiffReviewer filtering by severity threshold and mapping line numbers."""
-    mock_client = mocker.MagicMock()
+    """Test DiffReviewer filtering by severity threshold using the agent pipeline.
 
-    mock_findings = [
-        LLMFinding(
-            line_number=2,  # hallucinated line number (not in added lines)
+    DiffReviewer now calls run_agent_review() (multi-agent graph) instead of
+    the retired per-hunk llm_client.generate_completion() path.
+    This test mocks run_agent_review at the reviewer module level.
+    """
+    mock_client = mocker.MagicMock()
+    mock_client.model = "gemini-3.1-flash-lite"
+
+    # Findings that run_agent_review would return (already validated by agents)
+    agent_findings = [
+        Finding(
+            file_path="app.py",
+            line_number=11,   # valid added line
             severity="HIGH",
             category="security",
             message="Hardcoded API Key",
             suggestion="Use env var",
+            source="llm",
         ),
-        LLMFinding(
-            line_number=12,  # valid line number in added lines
+        Finding(
+            file_path="app.py",
+            line_number=12,   # valid added line
             severity="MEDIUM",
             category="logic",
             message="Edge case",
             suggestion="Fix it",
+            source="llm",
         ),
     ]
-    mock_client.generate_completion.return_value = LLMReviewResponse(
-        findings=mock_findings, summary="Diff Summary"
+
+    # Patch run_agent_review at the location it is used in reviewer.py
+    async def _fake_run(hunks, model, settings):
+        return agent_findings
+
+    mocker.patch(
+        "code_reviewer.core.reviewer.run_agent_review",
+        side_effect=_fake_run,
     )
-    mock_client.model = "gemini-3.1-flash-lite"
 
     settings = Settings()
     settings.severity_threshold = "MEDIUM"
 
     reviewer = DiffReviewer(llm_client=mock_client, settings=settings)
 
-    # Create dummy hunk
     hunk = DiffHunk(
         file_path="app.py",
         start_line=10,
         end_line=13,
-        added_lines=[(11, 'print("World")'), (12, 'return 1')],
+        added_lines=[(11, 'print("World")'), (12, "return 1")],
         removed_lines=[],
         context_lines=[(10, 'print("Hello")')],
-        raw_hunk=""
+        raw_hunk="",
     )
 
     result = reviewer.review_hunks("app.py", [hunk])
@@ -113,18 +128,11 @@ def test_diff_reviewer_filtering(mocker):
     assert result.file_path == "app.py"
     assert result.lines_reviewed == 2
 
-    # Both should remain since severities are >= MEDIUM
+    # Both findings should survive — both are >= MEDIUM
     assert len(result.findings) == 2
-
-    finding_1 = result.findings[0]
-    # The hallucinated line 2 should be mapped to 11 (first added line)
-    assert finding_1.line_number == 11
-    assert finding_1.category == "security"
-
-    finding_2 = result.findings[1]
-    # Valid line 12 stays 12
-    assert finding_2.line_number == 12
-    assert finding_2.category == "logic"
+    categories = {f.category for f in result.findings}
+    assert "security" in categories
+    assert "logic" in categories
 
 def test_combine_findings_deduplication():
     """Test that combine_findings properly deduplicates based on line_number and category."""

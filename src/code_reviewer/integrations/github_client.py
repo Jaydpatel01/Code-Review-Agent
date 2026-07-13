@@ -69,7 +69,7 @@ class GitHubClient:
             "Accept": "application/vnd.github.v3.diff",
             "X-GitHub-Api-Version": "2022-11-28",
         }
-        response = httpx.get(url, headers=headers, follow_redirects=True, timeout=30.0)
+        response = httpx.get(url, headers=headers, follow_redirects=True)
         response.raise_for_status()
         return response.text
 
@@ -155,7 +155,7 @@ class GitHubClient:
                 }
             ],
         }
-        response = httpx.post(url, json=payload, headers=headers, timeout=30.0)
+        response = httpx.post(url, json=payload, headers=headers)
         if response.status_code not in (200, 201):
             logger.warning(
                 "Failed to post inline comment on %s#%d %s@%d: %s %s",
