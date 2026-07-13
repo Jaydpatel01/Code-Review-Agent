@@ -21,6 +21,8 @@ dependencies = [
     "uvicorn>=0.23.0",
     "httpx>=0.24.0",
     "PyGithub>=2.0.0",
+    "langgraph>=0.2.0",
+    "langchain-core>=0.2.0",
 ]
 
 [dependency-groups]
