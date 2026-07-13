@@ -131,3 +131,50 @@ class TestSecurityAgent:
         result = agent(_make_state("security"))
         assert result["security_findings"] == []
         assert "security" in result["error"]
+
+
+# ===========================================================================
+# PerformanceAgent
+# ===========================================================================
+
+class TestPerformanceAgent:
+    @pytest.fixture
+    def agent(self):
+        from code_reviewer.agents.performance import PerformanceAgent
+        return PerformanceAgent()
+
+    def test_name(self, agent):
+        assert agent.name == "performance"
+
+    def test_category(self, agent):
+        assert agent.category == "performance"
+
+    def test_system_prompt_mandatory_instructions(self, agent):
+        _assert_mandatory_instructions(agent.system_prompt)
+
+    def test_system_prompt_covers_domain(self, agent):
+        prompt = agent.system_prompt.lower()
+        for keyword in ["n+1", "loop", "async", "memoiz", "list"]:
+            assert keyword in prompt, f"Domain keyword {keyword!r} missing from performance prompt"
+
+    def test_call_returns_correct_state_key(self, agent, mocker):
+        _mock_llm_response(mocker, [])
+        result = agent(_make_state("performance"))
+        assert "performance_findings" in result
+        assert isinstance(result["performance_findings"], list)
+
+    def test_call_returns_error_key(self, agent, mocker):
+        _mock_llm_response(mocker, [])
+        result = agent(_make_state("performance"))
+        assert "error" in result
+
+    def test_prompt_never_high(self, agent):
+        """Performance prompt must not allow HIGH severity."""
+        assert "NEVER" in agent.system_prompt or "HIGH" not in agent.system_prompt
+
+    def test_exception_returns_empty_and_error(self, agent, mocker):
+        mocker.patch("litellm.completion", side_effect=RuntimeError("timeout"))
+        result = agent(_make_state("performance"))
+        assert result["performance_findings"] == []
+        assert "performance" in result["error"]
+
