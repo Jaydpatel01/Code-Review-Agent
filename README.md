@@ -113,6 +113,35 @@ When you run the reviewer, findings will indicate where they came from. Static c
 
 ---
 
+## Multi-Agent Architecture
+
+When reviewing git diffs, the agent spawns five parallel specialists via [LangGraph](https://github.com/langchain-ai/langgraph):
+
+| Agent | Domain |
+|-------|--------|
+| **SecurityAgent** | Injection, hardcoded secrets, path traversal, XSS, eval/exec, weak crypto, missing auth |
+| **PerformanceAgent** | N+1 queries, O(n²) algorithms, missing memoization, sync I/O in async context |
+| **LogicAgent** | Null checks, off-by-one errors, is vs ==, silent exception swallowing, edge cases |
+| **StyleAgent** | Misleading names, single-letter vars, SRP violations, dead/commented-out code |
+| **DocsAgent** | Contradictory comments, untracked TODOs, lying function names |
+
+All five agents run in **parallel** (LangGraph fan-out). Results are **deduplicated** — if two agents flag the same `(file, line, category)` key, the higher-severity finding wins. Static AST analysis still runs first and takes precedence over all LLM findings on the same line+category.
+
+```
+ START ──┬──► SecurityAgent     ──┐
+         ├──► PerformanceAgent  ──┤
+         ├──► LogicAgent        ──┼──► aggregate ──► END
+         ├──► StyleAgent        ──┤
+         └──► DocsAgent         ──┘
+```
+
+Each agent:
+1. Receives only the **added lines** (`+`) and their surrounding context — never the removed lines.
+2. Returns structured JSON: `{"findings": [{"line_number": int, "severity": ..., ...}]}`
+3. Has findings on non-added lines silently rejected (hallucination guard).
+
+---
+
 ## Usage
 
 ### CLI Commands
