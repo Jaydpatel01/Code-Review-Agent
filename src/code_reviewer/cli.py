@@ -13,6 +13,17 @@ from code_reviewer.core.llm_client import LLMClient, LLMClientError
 from code_reviewer.core.reviewer import FileReviewer, DiffReviewer
 from code_reviewer.analyzers.diff_parser import parse_diff
 
+def _sanitize_annotation(value: str) -> str:
+    """Sanitize a string for safe use in GitHub Actions annotation syntax."""
+    return (
+        value
+        .replace('%', '%25')
+        .replace('\r', '%0D')
+        .replace('\n', '%0A')
+        .replace(':', '%3A')
+        .replace(',', '%2C')
+    )
+
 # Setup Typer application and sub-commands
 app = typer.Typer(name="code-reviewer", help="AI Code Reviewer CLI")
 review_app = typer.Typer(help="Review code changes")
@@ -82,12 +93,16 @@ def review_file_cmd(
         print(result.model_dump_json(indent=2))
     elif format_type == "github":
         for finding in result.findings:
+            if finding is None:
+                continue
             line_str = f"line={finding.line_number}" if finding.line_number else ""
             github_sev = "error" if finding.severity == "HIGH" else "warning"
-            title = f"{finding.category} ({finding.severity})"
+            title = _sanitize_annotation(f"{finding.category} ({finding.severity})")
+            safe_file = _sanitize_annotation(finding.file_path)
+            safe_msg = _sanitize_annotation(finding.message)
             console.print(
-                f"::{github_sev} file={finding.file_path},{line_str},title={title}::"
-                f"{finding.message} -> {finding.suggestion}"
+                f"::{github_sev} file={safe_file},{line_str},title={title}::"
+                f"{safe_msg} -> {finding.suggestion}"
             )
         console.print(f"Reviewed {file_path}: {len(result.findings)} findings.")
     else:  # pretty
@@ -218,12 +233,16 @@ def review_diff_cmd(
     elif format_type == "github":
         for res in all_results:
             for finding in res.findings:
+                if finding is None:
+                    continue
                 line_str = f"line={finding.line_number}" if finding.line_number else ""
                 github_sev = "error" if finding.severity == "HIGH" else "warning"
-                title = f"{finding.category} ({finding.severity})"
+                title = _sanitize_annotation(f"{finding.category} ({finding.severity})")
+                safe_file = _sanitize_annotation(finding.file_path)
+                safe_msg = _sanitize_annotation(finding.message)
                 console.print(
-                    f"::{github_sev} file={finding.file_path},{line_str},title={title}::"
-                    f"{finding.message} -> {finding.suggestion}"
+                    f"::{github_sev} file={safe_file},{line_str},title={title}::"
+                    f"{safe_msg} -> {finding.suggestion}"
                 )
         console.print(f"Reviewed {len(all_results)} files: {total_findings} findings.")
     else:  # pretty
