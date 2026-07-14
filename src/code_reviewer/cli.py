@@ -423,6 +423,11 @@ def review_diff_cmd(
     start_time = time.time()
     results = _run_diff_review(diff_text, settings)
     elapsed = time.time() - start_time
+
+    if not results:
+        typer.echo("No files could be reviewed. Exiting.", err=True)
+        raise typer.Exit(code=0)
+
     _output_diff_results(results, settings.output.format, settings, elapsed)
 
 
