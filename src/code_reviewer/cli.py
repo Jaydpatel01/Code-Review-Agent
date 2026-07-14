@@ -1,9 +1,12 @@
 """Typer CLI entrypoint for the AI Code Reviewer."""
 
+import asyncio
 import json
+import re
 import subprocess
 import time
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Optional
 
 import typer
@@ -23,6 +26,13 @@ from code_reviewer.analyzers.diff_parser import parse_diff
 _SEVERITY_ORDER: dict[str, int] = {"HIGH": 3, "MEDIUM": 2, "LOW": 1, "INFO": 0}
 _VALID_SEVERITIES = list(_SEVERITY_ORDER.keys())
 _VALID_FORMATS = ["pretty", "json", "github"]
+
+# ---------------------------------------------------------------------------
+# Git ref validation — allowlist pattern to prevent injection via target arg
+# ---------------------------------------------------------------------------
+_VALID_GIT_REF = re.compile(
+    r'^[a-zA-Z0-9._/~^:@{}\[\]\\-]+(\.\.[\ a-zA-Z0-9._/~^:@{}\[\]\\-]+)?$'
+)
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -258,11 +268,29 @@ def _build_git_diff_command(target: Optional[str], staged: bool) -> list[str]:
     return cmd
 
 
+def _validate_git_target(target: str) -> bool:
+    """Validate a git reference against a strict allowlist pattern.
+
+    Allows: branch names, commit SHAs, HEAD~N, range syntax (a..b).
+    Rejects: shell metacharacters, semicolons, pipes, backticks, $(), etc.
+    """
+    return bool(_VALID_GIT_REF.match(target))
+
+
 def _run_git_diff(target: Optional[str], staged: bool) -> Optional[str]:
     """Run git diff and return the raw diff text, or None on failure.
 
-    Prints an error message and returns None on CalledProcessError.
+    Validates target against the allowlist before passing to subprocess.
+    Prints an error message and returns None on invalid ref or CalledProcessError.
+    subprocess.run() is always called with a list (shell=False) for safety.
     """
+    if target and not staged and not _validate_git_target(target):
+        typer.echo(
+            f"[ERROR] Invalid git reference: '{target}'. "
+            "Only valid git refs and ranges are allowed.",
+            err=True,
+        )
+        return None
     cmd = _build_git_diff_command(target, staged)
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -284,56 +312,83 @@ def _validate_diff_not_empty(diff_text: str, target: Optional[str]) -> bool:
     return True
 
 
-def _run_diff_review(diff_text: str, settings: Settings) -> list[ReviewResult]:
-    """Parse the diff text, group hunks by file, and run DiffReviewer on each.
+async def _review_all_files_async(
+    hunks_by_file: dict,
+    settings: Settings,
+) -> list[ReviewResult]:
+    """Run per-file LLM reviews in parallel using asyncio.gather.
 
-    Returns a list of ReviewResult objects (one per file). Errors per file are
-    printed but do not stop review of remaining files.
+    Each file's hunks are sent through the full multi-agent graph
+    (run_agent_review) concurrently. Failed files are skipped and
+    a warning is printed; they do not block the other files.
+    """
+    from code_reviewer.agents.graph import run_agent_review
+
+    async def _review_one(
+        file_path: str,
+        hunks: list,
+    ) -> ReviewResult | None:
+        """Review a single file's hunks; return None on failure."""
+        try:
+            findings = await run_agent_review(hunks, settings.model, settings)
+            return ReviewResult(
+                file_path=file_path,
+                findings=findings,
+                summary=f"Reviewed {len(hunks)} hunks via multi-agent graph",
+                reviewed_at=datetime.now(tz=timezone.utc),
+                model_used=settings.model,
+                lines_reviewed=sum(len(h.added_lines) for h in hunks),
+            )
+        except Exception as e:
+            typer.echo(f"[WARN] Failed to review {file_path}: {e}", err=True)
+            return None
+
+    results = await asyncio.gather(
+        *[_review_one(fp, hunks) for fp, hunks in hunks_by_file.items()]
+    )
+    return [r for r in results if r is not None]
+
+
+def _run_diff_review(diff_text: str, settings: Settings) -> list[ReviewResult]:
+    """Parse the diff text, group hunks by file, and review all files in parallel.
+
+    Uses asyncio.gather to fan-out per-file LLM reviews concurrently via the
+    multi-agent graph. Returns a list of ReviewResult objects (one per file).
+    Files that fail are skipped; they do not block the other files.
     """
     hunks = parse_diff(diff_text)
     if not hunks:
         console.print("[yellow]No valid diff hunks parsed.[/yellow]")
         return []
 
-    hunks_by_file = defaultdict(list)
+    hunks_by_file: dict = defaultdict(list)
     for hunk in hunks:
         hunks_by_file[hunk.file_path].append(hunk)
 
-    llm_client = LLMClient(model=settings.model, max_tokens=settings.max_tokens)
-    reviewer = DiffReviewer(llm_client=llm_client, settings=settings)
-
-    results: list[ReviewResult] = []
-    with console.status("[bold green]Analyzing diffs..."):
-        for file_path, file_hunks in hunks_by_file.items():
-            try:
-                results.append(reviewer.review_hunks(file_path, file_hunks))
-            except LLMClientError as e:
-                console.print(f"[red]LLM Review Failed for {file_path}: {e}[/red]")
-            except Exception as e:
-                console.print(f"[red]Unexpected Error for {file_path}: {e}[/red]")
-    return results
+    return asyncio.run(_review_all_files_async(hunks_by_file, settings))
 
 
-def _output_diff_results(
+def _print_diff_json(results: list[ReviewResult], **_: object) -> None:
+    """Print all diff ReviewResults as a JSON array."""
+    print(json.dumps([r.model_dump(mode="json") for r in results], indent=2))
+
+
+def _print_diff_github(results: list[ReviewResult], **_: object) -> None:
+    """Print all diff ReviewResults as GitHub Actions annotation lines."""
+    total = sum(len(r.findings) for r in results)
+    for result in results:
+        _print_github_findings([f for f in result.findings if f is not None])
+    console.print(f"Reviewed {len(results)} files: {total} findings.")
+
+
+def _print_diff_pretty(
     results: list[ReviewResult],
-    output_format: str,
     settings: Settings,
     elapsed: float,
+    **_: object,
 ) -> None:
-    """Dispatch a list of diff ReviewResults to the correct output formatter."""
+    """Print all diff ReviewResults as rich Panels (pretty mode)."""
     total = sum(len(r.findings) for r in results)
-
-    if output_format == "json":
-        print(json.dumps([r.model_dump(mode="json") for r in results], indent=2))
-        return
-
-    if output_format == "github":
-        for result in results:
-            _print_github_findings([f for f in result.findings if f is not None])
-        console.print(f"Reviewed {len(results)} files: {total} findings.")
-        return
-
-    # pretty
     for result in results:
         findings = [f for f in result.findings if f is not None]
         if not findings:
@@ -346,6 +401,31 @@ def _output_diff_results(
             footer=footer,
         )
     console.print(f"Total: {total} findings in {len(results)} files.")
+
+
+_DIFF_FORMATTERS = {
+    "json":   _print_diff_json,
+    "github": _print_diff_github,
+    "pretty": _print_diff_pretty,
+}
+
+
+def _output_diff_results(
+    results: list[ReviewResult],
+    output_format: str,
+    settings: Settings,
+    elapsed: float,
+) -> None:
+    """Dispatch a list of diff ReviewResults to the correct output formatter.
+
+    Uses a dispatch dictionary to select the formatter by name, keeping CC < 5.
+    Raises typer.Exit(1) if an unknown format is requested.
+    """
+    formatter = _DIFF_FORMATTERS.get(output_format)
+    if formatter is None:
+        typer.echo(f"[ERROR] Unknown output format: '{output_format}'", err=True)
+        raise typer.Exit(code=1)
+    formatter(results, settings=settings, elapsed=elapsed)
 
 
 # ===========================================================================
@@ -397,6 +477,11 @@ def review_diff_cmd(
     start_time = time.time()
     results = _run_diff_review(diff_text, settings)
     elapsed = time.time() - start_time
+
+    if not results:
+        typer.echo("No files could be reviewed. Exiting.", err=True)
+        raise typer.Exit(code=0)
+
     _output_diff_results(results, settings.output.format, settings, elapsed)
 
 
