@@ -324,7 +324,7 @@ def _output_diff_results(
     total = sum(len(r.findings) for r in results)
 
     if output_format == "json":
-        print(json.dumps([r.model_dump() for r in results], indent=2))
+        print(json.dumps([r.model_dump(mode="json") for r in results], indent=2))
         return
 
     if output_format == "github":
