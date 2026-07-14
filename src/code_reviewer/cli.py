@@ -1,6 +1,7 @@
 """Typer CLI entrypoint for the AI Code Reviewer."""
 
 import json
+import re
 import subprocess
 import time
 from collections import defaultdict
@@ -23,6 +24,13 @@ from code_reviewer.analyzers.diff_parser import parse_diff
 _SEVERITY_ORDER: dict[str, int] = {"HIGH": 3, "MEDIUM": 2, "LOW": 1, "INFO": 0}
 _VALID_SEVERITIES = list(_SEVERITY_ORDER.keys())
 _VALID_FORMATS = ["pretty", "json", "github"]
+
+# ---------------------------------------------------------------------------
+# Git ref validation — allowlist pattern to prevent injection via target arg
+# ---------------------------------------------------------------------------
+_VALID_GIT_REF = re.compile(
+    r'^[a-zA-Z0-9._/~^:@{}\[\]\\-]+(\.\.[\ a-zA-Z0-9._/~^:@{}\[\]\\-]+)?$'
+)
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -258,11 +266,29 @@ def _build_git_diff_command(target: Optional[str], staged: bool) -> list[str]:
     return cmd
 
 
+def _validate_git_target(target: str) -> bool:
+    """Validate a git reference against a strict allowlist pattern.
+
+    Allows: branch names, commit SHAs, HEAD~N, range syntax (a..b).
+    Rejects: shell metacharacters, semicolons, pipes, backticks, $(), etc.
+    """
+    return bool(_VALID_GIT_REF.match(target))
+
+
 def _run_git_diff(target: Optional[str], staged: bool) -> Optional[str]:
     """Run git diff and return the raw diff text, or None on failure.
 
-    Prints an error message and returns None on CalledProcessError.
+    Validates target against the allowlist before passing to subprocess.
+    Prints an error message and returns None on invalid ref or CalledProcessError.
+    subprocess.run() is always called with a list (shell=False) for safety.
     """
+    if target and not staged and not _validate_git_target(target):
+        typer.echo(
+            f"[ERROR] Invalid git reference: '{target}'. "
+            "Only valid git refs and ranges are allowed.",
+            err=True,
+        )
+        return None
     cmd = _build_git_diff_command(target, staged)
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
