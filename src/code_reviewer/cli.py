@@ -375,9 +375,11 @@ def _print_diff_json(results: list[ReviewResult], **_: object) -> None:
 
 def _print_diff_github(results: list[ReviewResult], **_: object) -> None:
     """Print all diff ReviewResults as GitHub Actions annotation lines."""
-    total = sum(len(r.findings) for r in results)
+    total = 0
     for result in results:
-        _print_github_findings([f for f in result.findings if f is not None])
+        findings = [f for f in result.findings if f is not None]
+        _print_github_findings(findings)
+        total += len(findings)
     console.print(f"Reviewed {len(results)} files: {total} findings.")
 
 
@@ -388,7 +390,7 @@ def _print_diff_pretty(
     **_: object,
 ) -> None:
     """Print all diff ReviewResults as rich Panels (pretty mode)."""
-    total = sum(len(r.findings) for r in results)
+    total = 0
     for result in results:
         findings = [f for f in result.findings if f is not None]
         if not findings:
@@ -400,6 +402,7 @@ def _print_diff_pretty(
             show_suggestion=settings.output.show_suggestions,
             footer=footer,
         )
+        total += len(findings)
     console.print(f"Total: {total} findings in {len(results)} files.")
 
 
