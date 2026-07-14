@@ -368,26 +368,27 @@ def _run_diff_review(diff_text: str, settings: Settings) -> list[ReviewResult]:
     return asyncio.run(_review_all_files_async(hunks_by_file, settings))
 
 
-def _output_diff_results(
+def _print_diff_json(results: list[ReviewResult], **_: object) -> None:
+    """Print all diff ReviewResults as a JSON array."""
+    print(json.dumps([r.model_dump(mode="json") for r in results], indent=2))
+
+
+def _print_diff_github(results: list[ReviewResult], **_: object) -> None:
+    """Print all diff ReviewResults as GitHub Actions annotation lines."""
+    total = sum(len(r.findings) for r in results)
+    for result in results:
+        _print_github_findings([f for f in result.findings if f is not None])
+    console.print(f"Reviewed {len(results)} files: {total} findings.")
+
+
+def _print_diff_pretty(
     results: list[ReviewResult],
-    output_format: str,
     settings: Settings,
     elapsed: float,
+    **_: object,
 ) -> None:
-    """Dispatch a list of diff ReviewResults to the correct output formatter."""
+    """Print all diff ReviewResults as rich Panels (pretty mode)."""
     total = sum(len(r.findings) for r in results)
-
-    if output_format == "json":
-        print(json.dumps([r.model_dump(mode="json") for r in results], indent=2))
-        return
-
-    if output_format == "github":
-        for result in results:
-            _print_github_findings([f for f in result.findings if f is not None])
-        console.print(f"Reviewed {len(results)} files: {total} findings.")
-        return
-
-    # pretty
     for result in results:
         findings = [f for f in result.findings if f is not None]
         if not findings:
@@ -400,6 +401,31 @@ def _output_diff_results(
             footer=footer,
         )
     console.print(f"Total: {total} findings in {len(results)} files.")
+
+
+_DIFF_FORMATTERS = {
+    "json":   _print_diff_json,
+    "github": _print_diff_github,
+    "pretty": _print_diff_pretty,
+}
+
+
+def _output_diff_results(
+    results: list[ReviewResult],
+    output_format: str,
+    settings: Settings,
+    elapsed: float,
+) -> None:
+    """Dispatch a list of diff ReviewResults to the correct output formatter.
+
+    Uses a dispatch dictionary to select the formatter by name, keeping CC < 5.
+    Raises typer.Exit(1) if an unknown format is requested.
+    """
+    formatter = _DIFF_FORMATTERS.get(output_format)
+    if formatter is None:
+        typer.echo(f"[ERROR] Unknown output format: '{output_format}'", err=True)
+        raise typer.Exit(code=1)
+    formatter(results, settings=settings, elapsed=elapsed)
 
 
 # ===========================================================================
