@@ -96,14 +96,19 @@ def review_file_cmd(
             if finding is None:
                 continue
             line_str = f"line={finding.line_number}" if finding.line_number else ""
-            github_sev = "error" if finding.severity == "HIGH" else "warning"
-            title = _sanitize_annotation(f"{finding.category} ({finding.severity})")
-            safe_file = _sanitize_annotation(finding.file_path)
-            safe_msg = _sanitize_annotation(finding.message)
-            console.print(
-                f"::{github_sev} file={safe_file},{line_str},title={title}::"
-                f"{safe_msg} -> {finding.suggestion}"
-            )
+            if finding.severity == "HIGH":
+                github_sev = "error"
+            elif finding.severity == "MEDIUM":
+                github_sev = "warning"
+            else:
+                github_sev = "notice"
+            
+            title = finding.category
+            msg = finding.message
+            if finding.suggestion:
+                msg += f" {finding.suggestion}"
+                
+            print(f"::{github_sev} file={finding.file_path},{line_str},title={title}::{msg}")
         console.print(f"Reviewed {file_path}: {len(result.findings)} findings.")
     else:  # pretty
         lines = []
@@ -236,14 +241,19 @@ def review_diff_cmd(
                 if finding is None:
                     continue
                 line_str = f"line={finding.line_number}" if finding.line_number else ""
-                github_sev = "error" if finding.severity == "HIGH" else "warning"
-                title = _sanitize_annotation(f"{finding.category} ({finding.severity})")
-                safe_file = _sanitize_annotation(finding.file_path)
-                safe_msg = _sanitize_annotation(finding.message)
-                console.print(
-                    f"::{github_sev} file={safe_file},{line_str},title={title}::"
-                    f"{safe_msg} -> {finding.suggestion}"
-                )
+                if finding.severity == "HIGH":
+                    github_sev = "error"
+                elif finding.severity == "MEDIUM":
+                    github_sev = "warning"
+                else:
+                    github_sev = "notice"
+                
+                title = finding.category
+                msg = finding.message
+                if finding.suggestion:
+                    msg += f" {finding.suggestion}"
+                    
+                print(f"::{github_sev} file={finding.file_path},{line_str},title={title}::{msg}")
         console.print(f"Reviewed {len(all_results)} files: {total_findings} findings.")
     else:  # pretty
         for res in all_results:
