@@ -1,12 +1,4 @@
-"""Unit tests for FileWalker.
-
-Tests cover:
-  - walk() max_files boundary: the file that triggers the limit is included
-  - _is_excluded() exact-match patterns (.venv, __pycache__)
-  - _is_excluded() wildcard patterns (*.egg-info)
-  - _is_excluded() returns False for valid paths
-  - walk() returns all files when max_files=0 (unlimited)
-"""
+"""Unit tests for FileWalker (src/code_reviewer/indexer/file_walker.py)."""
 
 from __future__ import annotations
 
@@ -19,130 +11,184 @@ from code_reviewer.indexer.file_walker import FileWalker
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Helpers
 # ---------------------------------------------------------------------------
 
-@pytest.fixture()
-def tmp_py_tree(tmp_path: Path) -> Path:
-    """Create a small temp directory tree with Python source files.
+def _create_tree(base: Path, structure: dict) -> None:
+    """Recursively create a directory tree from a dict spec.
 
-    Layout:
-        tmp_path/
-            a.py
-            b.py
-            c.py
-            d.py
-            .venv/
-                lib.py          <- should be excluded
-            __pycache__/
-                x.pyc           <- extension won't match *.py; also excluded dir
-            valid_module/
-                main.py
+    Keys are path components; values are either dicts (directories) or str
+    (file content).  Example::
+
+        {"src": {"main.py": "x=1", "__pycache__": {"cache.pyc": ""}}}
     """
-    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
-    (tmp_path / "b.py").write_text("x = 2\n", encoding="utf-8")
-    (tmp_path / "c.py").write_text("x = 3\n", encoding="utf-8")
-    (tmp_path / "d.py").write_text("x = 4\n", encoding="utf-8")
-
-    venv = tmp_path / ".venv"
-    venv.mkdir()
-    (venv / "lib.py").write_text("# venv file\n", encoding="utf-8")
-
-    cache = tmp_path / "__pycache__"
-    cache.mkdir()
-    # .pyc won't match *.py pattern but the directory is also excluded
-    (cache / "x.pyc").write_text("", encoding="utf-8")
-
-    mod = tmp_path / "valid_module"
-    mod.mkdir()
-    (mod / "main.py").write_text("def main(): pass\n", encoding="utf-8")
-
-    return tmp_path
+    for name, content in structure.items():
+        target = base / name
+        if isinstance(content, dict):
+            target.mkdir(parents=True, exist_ok=True)
+            _create_tree(target, content)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
-# Tests: walk() max_files boundary (FIX 4)
+# Tests
 # ---------------------------------------------------------------------------
 
-class TestWalkMaxFiles:
-    """The file that triggers the max_files limit must be yielded (not skipped)."""
-
-    def test_walk_max_files_3_yields_exactly_3(self, tmp_py_tree: Path) -> None:
-        """walk(max_files=3) must yield exactly 3 files, not 2."""
-        walker = FileWalker(tmp_py_tree, include=["*.py"], max_files=3)
-        result = list(walker.walk())
-        assert len(result) == 3, (
-            f"Expected exactly 3 files, got {len(result)}: {result}"
-        )
-
-    def test_walk_max_files_1_yields_exactly_1(self, tmp_py_tree: Path) -> None:
-        """Edge case: max_files=1 must yield exactly 1 file."""
-        walker = FileWalker(tmp_py_tree, include=["*.py"], max_files=1)
-        result = list(walker.walk())
-        assert len(result) == 1
-
-    def test_walk_unlimited_yields_all_non_excluded_py_files(
-        self, tmp_py_tree: Path
-    ) -> None:
-        """max_files=0 means unlimited; should yield all *.py not in excluded dirs."""
-        walker = FileWalker(tmp_py_tree, include=["*.py"], max_files=0)
-        result = list(walker.walk())
-        names = {p.name for p in result}
-        # a.py, b.py, c.py, d.py, valid_module/main.py — NOT .venv/lib.py
+class TestFileWalkerInclude:
+    def test_yields_only_py_files(self, tmp_path):
+        """walk() only yields .py files when include=['*.py']."""
+        _create_tree(tmp_path, {
+            "a.py": "x = 1",
+            "b.txt": "text",
+            "c.js": "var x = 1;",
+            "sub": {"d.py": "y = 2"},
+        })
+        walker = FileWalker(tmp_path, include=["*.py"])
+        results = list(walker.walk())
+        names = {p.name for p in results}
         assert "a.py" in names
-        assert "b.py" in names
-        assert "c.py" in names
         assert "d.py" in names
+        assert "b.txt" not in names
+        assert "c.js" not in names
+
+    def test_multiple_include_patterns(self, tmp_path):
+        """walk() yields files matching any of multiple include patterns."""
+        _create_tree(tmp_path, {
+            "a.py": "x = 1",
+            "b.js": "var x;",
+            "c.txt": "text",
+        })
+        walker = FileWalker(tmp_path, include=["*.py", "*.js"])
+        names = {p.name for p in walker.walk()}
+        assert "a.py" in names
+        assert "b.js" in names
+        assert "c.txt" not in names
+
+
+class TestFileWalkerExclude:
+    def test_skips_pycache(self, tmp_path):
+        """walk() skips files inside __pycache__."""
+        _create_tree(tmp_path, {
+            "ok.py": "x = 1",
+            "__pycache__": {"compiled.py": "# compiled"},
+        })
+        walker = FileWalker(tmp_path)
+        names = {p.name for p in walker.walk()}
+        assert "ok.py" in names
+        assert "compiled.py" not in names
+
+    def test_skips_venv_directory(self, tmp_path):
+        """walk() skips files inside .venv."""
+        _create_tree(tmp_path, {
+            "app.py": "x = 1",
+            ".venv": {"lib.py": "# venv lib"},
+        })
+        walker = FileWalker(tmp_path)
+        names = {p.name for p in walker.walk()}
+        assert "app.py" in names
+        assert "lib.py" not in names
+
+    def test_custom_exclude_pattern(self, tmp_path):
+        """walk() respects custom exclude patterns."""
+        _create_tree(tmp_path, {
+            "src": {"main.py": "x = 1"},
+            "vendor": {"third_party.py": "# vendor"},
+        })
+        walker = FileWalker(tmp_path, exclude=["vendor"])
+        names = {p.name for p in walker.walk()}
         assert "main.py" in names
-        assert "lib.py" not in names, ".venv/lib.py must be excluded"
+        assert "third_party.py" not in names
+
+    def test_skips_node_modules(self, tmp_path):
+        """walk() skips files inside node_modules."""
+        _create_tree(tmp_path, {
+            "index.py": "x = 1",
+            "node_modules": {"pkg.py": "# npm"},
+        })
+        walker = FileWalker(tmp_path)
+        names = {p.name for p in walker.walk()}
+        assert "index.py" in names
+        assert "pkg.py" not in names
 
 
-# ---------------------------------------------------------------------------
-# Tests: _is_excluded (FIX 5)
-# ---------------------------------------------------------------------------
+class TestFileWalkerMaxFiles:
+    def test_stops_at_max_files(self, tmp_path, capsys):
+        """walk() stops after max_files and prints a warning."""
+        for i in range(5):
+            (tmp_path / f"f{i}.py").write_text(f"x = {i}", encoding="utf-8")
 
-class TestIsExcluded:
-    """_is_excluded must use the pre-computed exact set for common names."""
+        walker = FileWalker(tmp_path, max_files=3)
+        results = list(walker.walk())
 
-    def _make_walker(self, root: Path) -> FileWalker:
-        return FileWalker(root, include=["*.py"])
+        assert len(results) == 3
+        captured = capsys.readouterr()
+        assert "max_files limit (3) reached" in captured.out
 
-    def test_venv_directory_is_excluded(self, tmp_py_tree: Path) -> None:
-        """Paths inside .venv must be excluded via exact match."""
-        walker = self._make_walker(tmp_py_tree)
-        excluded_path = tmp_py_tree / ".venv" / "lib.py"
-        assert walker._is_excluded(excluded_path) is True
+    def test_max_files_zero_returns_all(self, tmp_path):
+        """walk() with max_files=0 returns all matching files."""
+        for i in range(10):
+            (tmp_path / f"f{i}.py").write_text(f"x = {i}", encoding="utf-8")
 
-    def test_pycache_directory_is_excluded(self, tmp_py_tree: Path) -> None:
-        """Paths inside __pycache__ must be excluded via exact match."""
-        walker = self._make_walker(tmp_py_tree)
-        excluded_path = tmp_py_tree / "__pycache__" / "x.pyc"
-        assert walker._is_excluded(excluded_path) is True
+        walker = FileWalker(tmp_path, max_files=0)
+        results = list(walker.walk())
+        assert len(results) == 10
 
-    def test_valid_module_not_excluded(self, tmp_py_tree: Path) -> None:
-        """Paths inside a normal module directory must NOT be excluded."""
-        walker = self._make_walker(tmp_py_tree)
-        valid_path = tmp_py_tree / "valid_module" / "main.py"
-        assert walker._is_excluded(valid_path) is False
+    def test_no_warning_when_under_limit(self, tmp_path, capsys):
+        """walk() does not print a warning when file count is within limit."""
+        (tmp_path / "only.py").write_text("x = 1", encoding="utf-8")
+        walker = FileWalker(tmp_path, max_files=10)
+        list(walker.walk())
+        captured = capsys.readouterr()
+        assert "max_files" not in captured.out
 
-    def test_wildcard_egg_info_excluded(self, tmp_py_tree: Path) -> None:
-        """*.egg-info is a wildcard pattern and must still be excluded."""
-        walker = self._make_walker(tmp_py_tree)
-        egg_path = tmp_py_tree / "mypackage.egg-info" / "PKG-INFO"
-        assert walker._is_excluded(egg_path) is True
 
-    def test_exact_set_populated_correctly(self, tmp_py_tree: Path) -> None:
-        """Pre-computed _exclude_exact set must contain all non-wildcard patterns."""
-        walker = self._make_walker(tmp_py_tree)
-        assert ".venv" in walker._exclude_exact
-        assert "__pycache__" in walker._exclude_exact
-        assert ".git" in walker._exclude_exact
-        # wildcard patterns must NOT be in the exact set
-        assert "*.egg-info" not in walker._exclude_exact
+class TestFileWalkerCount:
+    def test_count_returns_correct_total(self, tmp_path):
+        """count() returns the total number of matching files ignoring max_files."""
+        for i in range(7):
+            (tmp_path / f"f{i}.py").write_text(f"x = {i}", encoding="utf-8")
 
-    def test_glob_list_populated_correctly(self, tmp_py_tree: Path) -> None:
-        """Pre-computed _exclude_glob must contain only wildcard patterns."""
-        walker = self._make_walker(tmp_py_tree)
-        assert "*.egg-info" in walker._exclude_glob
-        # exact patterns must NOT be in the glob list
-        assert ".venv" not in walker._exclude_glob
+        walker = FileWalker(tmp_path, max_files=3)
+        assert walker.count() == 7
+
+    def test_count_excludes_non_matching(self, tmp_path):
+        """count() only counts files matching the include patterns."""
+        (tmp_path / "a.py").write_text("x = 1", encoding="utf-8")
+        (tmp_path / "b.txt").write_text("text", encoding="utf-8")
+        (tmp_path / "c.js").write_text("var x;", encoding="utf-8")
+
+        walker = FileWalker(tmp_path, include=["*.py"])
+        assert walker.count() == 1
+
+
+class TestFileWalkerEdgeCases:
+    def test_skips_oversized_file(self, tmp_path):
+        """walk() skips files larger than 500 KB."""
+        big = tmp_path / "big.py"
+        big.write_bytes(b"x = 1\n" * 100_000)  # ~600 KB
+        small = tmp_path / "small.py"
+        small.write_text("x = 1", encoding="utf-8")
+
+        walker = FileWalker(tmp_path)
+        names = {p.name for p in walker.walk()}
+        assert "small.py" in names
+        assert "big.py" not in names
+
+    def test_skips_binary_file(self, tmp_path):
+        """walk() skips files with non-UTF-8 content."""
+        binary = tmp_path / "binary.py"
+        binary.write_bytes(b"\x00\xFF\xFE invalid utf8 \x80\x81")
+        readable = tmp_path / "readable.py"
+        readable.write_text("x = 1", encoding="utf-8")
+
+        walker = FileWalker(tmp_path)
+        names = {p.name for p in walker.walk()}
+        assert "readable.py" in names
+        assert "binary.py" not in names
+
+    def test_empty_directory_yields_nothing(self, tmp_path):
+        """walk() on an empty directory yields no files."""
+        walker = FileWalker(tmp_path)
+        assert list(walker.walk()) == []

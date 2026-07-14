@@ -496,53 +496,25 @@ def review_diff_cmd(
 _VALID_REPO_MODES = ["smart", "thorough", "static-only"]
 
 
-async def _review_files_async(
-    file_paths: list[str],
-    settings: Settings,
-) -> dict[str, list[Finding]]:
-    """Review multiple files in parallel using asyncio.gather.
-
-    Each file is reviewed in a thread pool via ``asyncio.to_thread`` so that
-    the blocking litellm calls do not stall the event loop.  Failed files
-    produce an empty findings list rather than aborting the whole run.
-    """
-
-    async def _review_one(fp: str) -> tuple[str, list[Finding]]:
-        """Review a single file; return (path, findings) even on error."""
-        try:
-            result = await asyncio.to_thread(_run_file_review, fp, settings)
-            return fp, result.findings
-        except Exception as e:
-            typer.echo(f"[WARN] Failed to review {fp}: {e}", err=True)
-            return fp, []
-
-    pairs = await asyncio.gather(*[_review_one(fp) for fp in file_paths])
-    return dict(pairs)
-
-
 def _run_repo_review(
-    root: Path,
+    root: "Path",
     mode: str,
     include_patterns: list[str],
-    exclude_patterns: list[str] | None,
+    exclude_patterns: list[str],
     settings: Settings,
     max_files: int,
 ) -> dict[str, list[Finding]]:
     """Core logic for repo-level review across all three modes.
 
-    Returns a mapping of file_path -> findings (AST-only in static-only mode;
-    AST + LLM in smart/thorough).  On KeyboardInterrupt, prints partial
-    results collected so far and returns them instead of raising.
+    Returns a mapping of file_path → findings (AST-only in static-only mode;
+    AST + LLM in smart/thorough).  On KeyboardInterrupt, prints partial results
+    collected so far and returns them instead of raising.
     """
     from code_reviewer.indexer.file_walker import FileWalker
     from code_reviewer.indexer.risk_scorer import score_file_risk
+    from pathlib import Path as _Path
 
-    walker = FileWalker(
-        root,
-        include=include_patterns,
-        exclude=exclude_patterns,
-        max_files=max_files,
-    )
+    walker = FileWalker(root, include=include_patterns, exclude=exclude_patterns, max_files=max_files)
     total = walker.count()
     typer.echo(f"Found {total} files to review.")
     if max_files > 0 and total > max_files:
@@ -551,7 +523,7 @@ def _run_repo_review(
             f"Use --max-files 0 for all {total}."
         )
 
-    # Step 1: Walk + AST score (all modes)
+    # Step 2: Walk + AST score (all modes)
     all_findings: dict[str, list[Finding]] = {}
     risk_tiers: dict[str, str] = {}
 
@@ -561,33 +533,39 @@ def _run_repo_review(
             tier, findings = score_file_risk(file_path, settings)
             risk_tiers[str(file_path)] = tier
             all_findings[str(file_path)] = findings
-            typer.echo(tier)
+            tier_color = "HIGH" if tier == "HIGH" else ("MEDIUM" if tier == "MEDIUM" else "LOW")
+            typer.echo(tier_color)
     except KeyboardInterrupt:
         typer.echo("\n[Interrupted] Returning partial AST results.", err=True)
         return all_findings
 
-    # Step 2: LLM review (smart + thorough only)
+    # Step 3: LLM review (smart + thorough only)
     if mode == "static-only":
         return all_findings
 
     if mode == "smart":
-        target_files = [
-            fp for fp, tier in risk_tiers.items() if tier in ("HIGH", "MEDIUM")
-        ]
-        skipped = len(all_findings) - len(target_files)
+        high_medium = [fp for fp, tier in risk_tiers.items() if tier in ("HIGH", "MEDIUM")]
+        skipped = [fp for fp, tier in risk_tiers.items() if tier == "LOW"]
         typer.echo(
-            f"\nRunning LLM review on {len(target_files)} HIGH/MEDIUM risk files "
-            f"(skipping {skipped} LOW files)..."
+            f"\nRunning LLM review on {len(high_medium)} HIGH/MEDIUM risk files "
+            f"(skipping {len(skipped)} LOW files)..."
         )
+        target_files = high_medium
     else:  # thorough
+        typer.echo(f"\nRunning LLM review on all {len(all_findings)} files...")
         target_files = list(all_findings.keys())
-        typer.echo(f"\nRunning LLM review on all {len(target_files)} files...")
 
     try:
-        # FIX 6: parallel LLM calls via asyncio.gather + asyncio.to_thread
-        llm_results = asyncio.run(_review_files_async(target_files, settings))
-        for fp, llm_findings in llm_results.items():
-            all_findings[fp] = combine_findings(all_findings[fp], llm_findings)
+        for fp in target_files:
+            typer.echo(f"  LLM -> {fp}...")
+            try:
+                llm_result = _run_file_review(str(fp), settings)
+                all_findings[fp] = combine_findings(
+                    all_findings[fp],
+                    llm_result.findings,
+                )
+            except Exception as e:
+                typer.echo(f"  [WARN] LLM failed for {fp}: {e}", err=True)
     except KeyboardInterrupt:
         typer.echo("\n[Interrupted] Returning partial LLM results.", err=True)
 
@@ -629,14 +607,16 @@ def review_repo_cmd(
         "--max-files",
         help="Max files to review (0 = unlimited)",
     ),
-) -> None:
-    """Review all source files in a directory.
+):
+    """Review all source files in a directory (Phase 6 Layer 1).
 
     Three modes:
       static-only  AST analysis only — instant, zero API calls.
       smart        AST on all files, LLM only on HIGH/MEDIUM risk files.
       thorough     AST + LLM on every file.
     """
+    from pathlib import Path
+
     # Validate mode
     mode = mode.lower()
     if mode not in _VALID_REPO_MODES:
@@ -654,9 +634,7 @@ def review_repo_cmd(
         raise typer.Exit(code=1)
 
     include_patterns = [p.strip() for p in include.split(",") if p.strip()]
-    # Pass None when user provided no --exclude so FileWalker uses its built-in defaults
-    raw_excludes = [p.strip() for p in exclude.split(",") if p.strip()]
-    exclude_patterns: list[str] | None = raw_excludes if raw_excludes else None
+    exclude_patterns: list[str] = [p.strip() for p in exclude.split(",") if p.strip()]
 
     typer.echo(f"Reviewing [{mode.upper()}] {root}")
     start = time.perf_counter()
@@ -667,7 +645,7 @@ def review_repo_cmd(
 
     elapsed = time.perf_counter() - start
 
-    # Step 3: Filter and output
+    # Step 4: Filter and output
     threshold = settings.severity_threshold
     output_format = settings.output.format
 
@@ -681,9 +659,7 @@ def review_repo_cmd(
         for fp, findings in all_findings.items():
             filtered = _filter_by_severity(findings, threshold)
             if filtered:
-                out.append(
-                    {"file": fp, "findings": [f.model_dump(mode="json") for f in filtered]}
-                )
+                out.append({"file": fp, "findings": [f.model_dump(mode="json") for f in filtered]})
         print(_json.dumps(out, indent=2))
     else:
         for fp, findings in all_findings.items():
