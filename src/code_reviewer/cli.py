@@ -1,10 +1,12 @@
 """Typer CLI entrypoint for the AI Code Reviewer."""
 
+import asyncio
 import json
 import re
 import subprocess
 import time
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Optional
 
 import typer
@@ -310,34 +312,60 @@ def _validate_diff_not_empty(diff_text: str, target: Optional[str]) -> bool:
     return True
 
 
-def _run_diff_review(diff_text: str, settings: Settings) -> list[ReviewResult]:
-    """Parse the diff text, group hunks by file, and run DiffReviewer on each.
+async def _review_all_files_async(
+    hunks_by_file: dict,
+    settings: Settings,
+) -> list[ReviewResult]:
+    """Run per-file LLM reviews in parallel using asyncio.gather.
 
-    Returns a list of ReviewResult objects (one per file). Errors per file are
-    printed but do not stop review of remaining files.
+    Each file's hunks are sent through the full multi-agent graph
+    (run_agent_review) concurrently. Failed files are skipped and
+    a warning is printed; they do not block the other files.
+    """
+    from code_reviewer.agents.graph import run_agent_review
+
+    async def _review_one(
+        file_path: str,
+        hunks: list,
+    ) -> ReviewResult | None:
+        """Review a single file's hunks; return None on failure."""
+        try:
+            findings = await run_agent_review(hunks, settings.model, settings)
+            return ReviewResult(
+                file_path=file_path,
+                findings=findings,
+                summary=f"Reviewed {len(hunks)} hunks via multi-agent graph",
+                reviewed_at=datetime.now(tz=timezone.utc),
+                model_used=settings.model,
+                lines_reviewed=sum(len(h.added_lines) for h in hunks),
+            )
+        except Exception as e:
+            typer.echo(f"[WARN] Failed to review {file_path}: {e}", err=True)
+            return None
+
+    results = await asyncio.gather(
+        *[_review_one(fp, hunks) for fp, hunks in hunks_by_file.items()]
+    )
+    return [r for r in results if r is not None]
+
+
+def _run_diff_review(diff_text: str, settings: Settings) -> list[ReviewResult]:
+    """Parse the diff text, group hunks by file, and review all files in parallel.
+
+    Uses asyncio.gather to fan-out per-file LLM reviews concurrently via the
+    multi-agent graph. Returns a list of ReviewResult objects (one per file).
+    Files that fail are skipped; they do not block the other files.
     """
     hunks = parse_diff(diff_text)
     if not hunks:
         console.print("[yellow]No valid diff hunks parsed.[/yellow]")
         return []
 
-    hunks_by_file = defaultdict(list)
+    hunks_by_file: dict = defaultdict(list)
     for hunk in hunks:
         hunks_by_file[hunk.file_path].append(hunk)
 
-    llm_client = LLMClient(model=settings.model, max_tokens=settings.max_tokens)
-    reviewer = DiffReviewer(llm_client=llm_client, settings=settings)
-
-    results: list[ReviewResult] = []
-    with console.status("[bold green]Analyzing diffs..."):
-        for file_path, file_hunks in hunks_by_file.items():
-            try:
-                results.append(reviewer.review_hunks(file_path, file_hunks))
-            except LLMClientError as e:
-                console.print(f"[red]LLM Review Failed for {file_path}: {e}[/red]")
-            except Exception as e:
-                console.print(f"[red]Unexpected Error for {file_path}: {e}[/red]")
-    return results
+    return asyncio.run(_review_all_files_async(hunks_by_file, settings))
 
 
 def _output_diff_results(
