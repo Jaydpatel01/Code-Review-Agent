@@ -7,6 +7,7 @@ and a max-files safety cap to prevent runaway reviews on huge codebases.
 from __future__ import annotations
 
 import fnmatch
+import re
 from pathlib import Path
 from typing import Generator
 
@@ -57,6 +58,17 @@ class FileWalker:
         self.exclude: list[str] = exclude if exclude is not None else list(_DEFAULT_EXCLUDE)
         self.max_files = max_files
 
+        # Pre-compile glob patterns for improved performance during traversal
+        self.include_regex = [re.compile(fnmatch.translate(pat)) for pat in self.include]
+
+        self.exclude_exact: set[str] = set()
+        self.exclude_regex: list[re.Pattern] = []
+        for pat in self.exclude:
+            if any(c in pat for c in "*?[]"):
+                self.exclude_regex.append(re.compile(fnmatch.translate(pat)))
+            else:
+                self.exclude_exact.add(pat)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -64,15 +76,17 @@ class FileWalker:
     def _is_excluded(self, path: Path) -> bool:
         """Return True if any path component matches an exclude pattern."""
         for part in path.parts:
-            for pattern in self.exclude:
-                if fnmatch.fnmatch(part, pattern):
+            if part in self.exclude_exact:
+                return True
+            for rx in self.exclude_regex:
+                if rx.match(part):
                     return True
         return False
 
     def _matches_include(self, path: Path) -> bool:
         """Return True if the file name matches at least one include pattern."""
         name = path.name
-        return any(fnmatch.fnmatch(name, pat) for pat in self.include)
+        return any(rx.match(name) for rx in self.include_regex)
 
     def _is_binary(self, path: Path) -> bool:
         """Return True if the file cannot be decoded as UTF-8 (binary heuristic)."""
