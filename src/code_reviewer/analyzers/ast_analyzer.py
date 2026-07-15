@@ -95,7 +95,7 @@ class ASTAnalyzer(ast.NodeVisitor):
         """Report missing docstrings on public functions."""
         if not self.settings.rules.docs.enabled:
             return
-        if not node.name.startswith("_") or node.name == "__init__":
+        if not node.name.startswith("_") and node.name != "__init__":
             if not ast.get_docstring(node):
                 self.report_finding(
                     node,
@@ -111,7 +111,9 @@ class ASTAnalyzer(ast.NodeVisitor):
             return
         if not hasattr(node, 'args'):
             return
-        for default in node.args.defaults + getattr(node.args, 'kw_defaults', []):
+        from itertools import chain
+        defaults = chain(node.args.defaults, getattr(node.args, 'kw_defaults', []) or [])
+        for default in defaults:
             if default is None:
                 continue
             if isinstance(default, (ast.List, ast.Dict, ast.Set)):

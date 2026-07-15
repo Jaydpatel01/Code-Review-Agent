@@ -280,13 +280,29 @@ class StaticAnalyzer:
         if not self.settings.rules.magic_numbers.enabled:
             return
 
-        def find_bad_nodes(node, in_assign: bool = False) -> None:
-            if node.type in {"assignment_expression", "variable_declarator"}:
-                in_assign = True
+        def get_target_name(node) -> str | None:
+            for field in ("name", "id", "left"):
+                target = node.child_by_field_name(field)
+                if target:
+                    return source_code[target.start_byte:target.end_byte]
+            if node.children:
+                first = node.children[0]
+                return source_code[first.start_byte:first.end_byte]
+            return None
+
+        def walk(node, parent_is_constant_assign: bool = False) -> None:
+            is_constant_assign = parent_is_constant_assign
+
+            if node.type in {"variable_declarator", "assignment_expression"}:
+                name = get_target_name(node)
+                if name and name.isupper():
+                    is_constant_assign = True
+                else:
+                    is_constant_assign = False
 
             if node.type == "number":
                 val_str = source_code[node.start_byte:node.end_byte]
-                if val_str not in {"0", "1"} and not in_assign:
+                if val_str not in {"0", "1"} and not is_constant_assign:
                     findings.append(Finding(
                         file_path=file_path,
                         line_number=node.start_point[0] + 1,
@@ -298,9 +314,9 @@ class StaticAnalyzer:
                     ))
 
             for child in node.children:
-                find_bad_nodes(child, in_assign)
+                walk(child, is_constant_assign)
 
-        find_bad_nodes(func)
+        walk(func, False)
 
     # ------------------------------------------------------------------
     # Function-level orchestrator

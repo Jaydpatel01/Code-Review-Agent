@@ -65,7 +65,7 @@ def _open_hunk(line: str, current_file: str) -> Optional[tuple]:
     hunk = DiffHunk(
         file_path=current_file,
         start_line=new_start,
-        end_line=new_start + new_len - 1 if new_len > 0 else new_start,
+        end_line=new_start + new_len - 1,
         added_lines=[],
         removed_lines=[],
         context_lines=[],
