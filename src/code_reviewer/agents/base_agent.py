@@ -95,6 +95,68 @@ class BaseReviewAgent(ABC):
 
         return "\n\n".join(parts)
 
+    def _extract_json_payload(self, raw: str) -> list[dict]:
+        text = raw.strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            # Drop first line (```json or ```) and last line (```)
+            text = "\n".join(lines[1:-1]).strip()
+
+        try:
+            payload = json.loads(text)
+            return payload.get("findings", [])
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            logger.warning(
+                "%s: failed to parse LLM JSON response — returning empty list.",
+                self.name,
+            )
+            return []
+
+    def _build_valid_lines(self, hunks: list[DiffHunk]) -> dict[int, str]:
+        valid_lines: dict[int, str] = {}
+        for hunk in hunks:
+            for ln, _ in hunk.added_lines:
+                valid_lines[ln] = hunk.file_path
+        return valid_lines
+
+    def _parse_single_finding(
+        self, item: dict, valid_lines: dict[int, str], hunks: list[DiffHunk]
+    ) -> Finding | None:
+        try:
+            line_val = item.get("line_number")
+            line_number = int(line_val) if line_val is not None else None
+        except (ValueError, TypeError):
+            line_number = None
+
+        # Hallucination guard: drop findings not on an added line
+        if line_number is not None and line_number not in valid_lines:
+            logger.debug(
+                "%s: dropping hallucinated line_number=%s (not in added lines).",
+                self.name,
+                line_number,
+            )
+            return None
+
+        file_path = (
+            valid_lines[line_number]
+            if line_number in valid_lines
+            else (hunks[0].file_path if hunks else "unknown")
+        )
+
+        try:
+            return Finding(
+                file_path=file_path,
+                line_number=line_number,
+                severity=item["severity"],
+                category=self.category,   # type: ignore[arg-type]
+                message=item["message"],
+                suggestion=item["suggestion"],
+                source="llm",
+            )
+        except (KeyError, ValueError, TypeError) as exc:
+            logger.debug("%s: skipping malformed finding item: %s", self.name, exc)
+            return None
+
     def parse_response(self, raw: str, hunks: list[DiffHunk]) -> list[Finding]:
         """Parse the LLM's JSON response into validated Finding objects.
 
@@ -129,64 +191,16 @@ class BaseReviewAgent(ABC):
         Returns:
             A list of validated Finding objects.
         """
-        # Build fast lookup: line_number → file_path from added lines only
-        valid_lines: dict[int, str] = {}
-        for hunk in hunks:
-            for ln, _ in hunk.added_lines:
-                valid_lines[ln] = hunk.file_path
+        valid_lines = self._build_valid_lines(hunks)
+        raw_findings = self._extract_json_payload(raw)
 
         findings: list[Finding] = []
-
-        # Strip markdown code fences if the LLM wrapped its JSON
-        text = raw.strip()
-        if text.startswith("```"):
-            lines = text.splitlines()
-            # Drop first line (```json or ```) and last line (```)
-            text = "\n".join(lines[1:-1]).strip()
-
-        try:
-            payload = json.loads(text)
-            raw_findings = payload.get("findings", [])
-        except (json.JSONDecodeError, AttributeError, TypeError):
-            logger.warning(
-                "%s: failed to parse LLM JSON response — returning empty list.",
-                self.name,
-            )
-            return []
-
         for item in raw_findings:
-            try:
-                line_number = item.get("line_number")
-
-                # Hallucination guard: drop findings not on an added line
-                if line_number is not None and line_number not in valid_lines:
-                    logger.debug(
-                        "%s: dropping hallucinated line_number=%s (not in added lines).",
-                        self.name,
-                        line_number,
-                    )
-                    continue
-
-                file_path = (
-                    valid_lines[line_number]
-                    if line_number in valid_lines
-                    else (hunks[0].file_path if hunks else "unknown")
-                )
-
-                findings.append(
-                    Finding(
-                        file_path=file_path,
-                        line_number=line_number,
-                        severity=item["severity"],
-                        category=self.category,   # type: ignore[arg-type]
-                        message=item["message"],
-                        suggestion=item["suggestion"],
-                        source="llm",
-                    )
-                )
-            except (KeyError, ValueError, TypeError) as exc:
-                logger.debug("%s: skipping malformed finding item: %s", self.name, exc)
+            if not isinstance(item, dict):
                 continue
+            finding = self._parse_single_finding(item, valid_lines, hunks)
+            if finding:
+                findings.append(finding)
 
         return findings
 
