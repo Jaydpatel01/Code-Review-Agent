@@ -117,3 +117,23 @@ def test_non_retryable_exception_propagates_immediately(mocker):
 
     # Should have failed on the very first attempt — no retries
     assert mock_completion.call_count == 1
+
+
+def test_llm_client_validation_failure(mocker):
+    """Test that LLMClient raises LLMClientError if JSON is corrupt or invalid."""
+    mock_completion = mocker.patch("litellm.completion")
+
+    # Return corrupt JSON
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.content = "Not a valid JSON"
+    mock_completion.return_value = mock_response
+
+    client = LLMClient(max_retries=1)
+    with pytest.raises(LLMClientError) as excinfo:
+        client.generate_completion(
+            [{"role": "user", "content": "hello"}], response_format=LLMReviewResponse
+        )
+
+    assert "Failed to parse LLM response as JSON" in str(excinfo.value)
+

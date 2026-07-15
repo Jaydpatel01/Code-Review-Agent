@@ -103,7 +103,7 @@ class LLMClient:
             A validated instance of response_format.
 
         Raises:
-            ValueError: If the content cannot be parsed.
+            LLMClientError: If the content cannot be parsed or validated.
         """
         if isinstance(content, str):
             try:
@@ -118,12 +118,22 @@ class LLMClient:
                     clean = clean[7:]
                 if clean.endswith("```"):
                     clean = clean[:-3]
-                return response_format.model_validate_json(clean.strip())
+                try:
+                    return response_format.model_validate_json(clean.strip())
+                except Exception as sanitize_err:
+                    raise LLMClientError(
+                        f"Failed to parse LLM response as JSON: {sanitize_err}. Content: {content}"
+                    ) from sanitize_err
 
         if isinstance(content, response_format):
             return content
 
-        return response_format.model_validate(content)
+        try:
+            return response_format.model_validate(content)
+        except Exception as validate_err:
+            raise LLMClientError(
+                f"Failed to validate LLM response structure: {validate_err}. Content: {content}"
+            ) from validate_err
 
     # ------------------------------------------------------------------
     # Public API

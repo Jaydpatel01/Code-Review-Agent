@@ -64,13 +64,20 @@ def _apply_filters(findings: List[Finding], settings: Settings) -> List[Finding]
     """
     min_severity = SEVERITY_ORDER.get(settings.severity_threshold, 3)
     rules = settings.rules
-
-    _category_enabled = {
-        "complexity": rules.complexity.enabled,
-        "security": rules.security.enabled,
-        "style": rules.style.enabled,
-        "docs": rules.docs.enabled,
-    }
+    if rules is None:
+        _category_enabled = {
+            "complexity": True,
+            "security": True,
+            "style": True,
+            "docs": True,
+        }
+    else:
+        _category_enabled = {
+            "complexity": rules.complexity.enabled if rules.complexity is not None else True,
+            "security": rules.security.enabled if rules.security is not None else True,
+            "style": rules.style.enabled if rules.style is not None else True,
+            "docs": rules.docs.enabled if rules.docs is not None else True,
+        }
 
     result: List[Finding] = []
     for finding in findings:
