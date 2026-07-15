@@ -10,6 +10,15 @@ T = TypeVar("T", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
 
+# Exceptions that represent transient API/network problems and are safe to retry.
+_RETRYABLE_EXCEPTIONS = (
+    litellm.APIError,
+    litellm.Timeout,
+    litellm.RateLimitError,
+    litellm.ServiceUnavailableError,
+    litellm.APIConnectionError,
+)
+
 
 class LLMClientError(Exception):
     """Base exception for LLMClient operations."""
@@ -28,6 +37,7 @@ class LLMClient:
         temperature: float = 0.2,
         max_retries: int = 3,
         backoff_factor: float = 2.0,
+        initial_delay: float = 1.0,
     ):
         """
         Initialize the LLM Client.
@@ -40,6 +50,7 @@ class LLMClient:
             temperature: Randomness control.
             max_retries: Number of transient retries.
             backoff_factor: Multiplier for exponential backoff delay.
+            initial_delay: Starting delay in seconds before the first retry.
         """
         self.model = model
         self.api_key = api_key
@@ -48,6 +59,75 @@ class LLMClient:
         self.temperature = temperature
         self.max_retries = max_retries
         self.backoff_factor = backoff_factor
+        self.initial_delay = initial_delay
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _build_kwargs(
+        self,
+        messages: List[Dict[str, str]],
+        response_format: Optional[Type[T]],
+    ) -> Dict[str, Any]:
+        """Build the keyword-argument dict for litellm.completion."""
+        kwargs: Dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+        }
+        if self.api_key:
+            kwargs["api_key"] = self.api_key
+        if self.api_base:
+            kwargs["api_base"] = self.api_base
+        if response_format:
+            kwargs["response_format"] = response_format
+        return kwargs
+
+    def _parse_response(self, content: Any, response_format: Type[T]) -> T:
+        """
+        Parse raw completion content into the requested Pydantic model.
+
+        Handles three cases:
+          1. content is a plain string — attempt direct JSON validation.
+          2. Direct validation fails — strip Markdown code fences and retry.
+          3. content is already the target type — return it directly.
+          4. content is another dict/object — fall back to model_validate.
+
+        Args:
+            content: Raw content from the LiteLLM response.
+            response_format: Target Pydantic model class.
+
+        Returns:
+            A validated instance of response_format.
+
+        Raises:
+            ValueError: If the content cannot be parsed.
+        """
+        if isinstance(content, str):
+            try:
+                return response_format.model_validate_json(content)
+            except Exception as parse_err:
+                logger.warning(
+                    "Direct JSON validation failed: %s. Attempting sanitization...",
+                    parse_err,
+                )
+                clean = content.strip()
+                if clean.startswith("```json"):
+                    clean = clean[7:]
+                if clean.endswith("```"):
+                    clean = clean[:-3]
+                return response_format.model_validate_json(clean.strip())
+
+        if isinstance(content, response_format):
+            return content
+
+        return response_format.model_validate(content)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def generate_completion(
         self,
@@ -56,6 +136,10 @@ class LLMClient:
     ) -> T | str:
         """
         Generate completion content, potentially parsing into a Pydantic structure.
+
+        Only transient API/network errors are retried (litellm.APIError,
+        litellm.Timeout, litellm.RateLimitError, etc.). Programming errors
+        (NameError, TypeError, …) propagate immediately.
 
         Args:
             messages: Role-content formatted messages.
@@ -68,52 +152,26 @@ class LLMClient:
             LLMClientError: If completion fails or output validation fails after retries.
         """
         attempts = 0
-        delay = 1.0
+        delay = self.initial_delay
+        kwargs = self._build_kwargs(messages, response_format)
 
         while attempts <= self.max_retries:
             try:
-                kwargs: Dict[str, Any] = {
-                    "model": self.model,
-                    "messages": messages,
-                    "max_tokens": self.max_tokens,
-                    "temperature": self.temperature,
-                }
-                if self.api_key:
-                    kwargs["api_key"] = self.api_key
-                if self.api_base:
-                    kwargs["api_base"] = self.api_base
-
-                if response_format:
-                    kwargs["response_format"] = response_format
-
                 response = litellm.completion(**kwargs)
                 content = response.choices[0].message.content
 
                 if response_format:
-                    if isinstance(content, str):
-                        try:
-                            return response_format.model_validate_json(content)
-                        except Exception as parse_err:
-                            logger.warning(f"Direct JSON validation failed: {parse_err}. Attempting sanitization...")
-                            # Sanitize potential markdown wrap
-                            clean = content.strip()
-                            if clean.startswith("```json"):
-                                clean = clean[7:]
-                            if clean.endswith("```"):
-                                clean = clean[:-3]
-                            return response_format.model_validate_json(clean.strip())
-                    elif isinstance(content, response_format):
-                        return content
-                    else:
-                        return response_format.model_validate(content)
+                    return self._parse_response(content, response_format)
 
                 return content
 
-            except Exception as e:
+            except _RETRYABLE_EXCEPTIONS as e:
                 attempts += 1
                 if attempts > self.max_retries:
-                    raise LLMClientError(f"LLM execution failed after {self.max_retries} attempts: {str(e)}") from e
-                logger.warning(f"Transient error: {str(e)}. Retrying in {delay}s...")
+                    raise LLMClientError(
+                        f"LLM execution failed after {self.max_retries} attempts: {e}"
+                    ) from e
+                logger.warning("Transient error: %s. Retrying in %.1fs...", e, delay)
                 time.sleep(delay)
                 delay *= self.backoff_factor
 
