@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch, PropertyMock
 
+import httpx
 import pytest
 
 from code_reviewer.integrations.github_client import GitHubClient
@@ -102,15 +103,20 @@ class TestPostInlineComment:
             assert payload["comments"][0]["path"] == "src/foo.py"
             assert payload["commit_id"] == COMMIT_SHA
 
-    def test_logs_warning_on_non_2xx_response(self, client, caplog):
+    def test_raises_on_non_2xx_response(self, client):
+        """Non-2xx responses must raise httpx.HTTPStatusError so the caller knows."""
         with patch("code_reviewer.integrations.github_client.httpx.post") as mock_post:
             mock_resp = MagicMock()
             mock_resp.status_code = 422
             mock_resp.text = "Unprocessable Entity"
+            mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+                "422 Unprocessable Entity",
+                request=MagicMock(),
+                response=mock_resp,
+            )
             mock_post.return_value = mock_resp
 
-            import logging
-            with caplog.at_level(logging.WARNING, logger="code_reviewer.integrations.github_client"):
+            with pytest.raises(httpx.HTTPStatusError):
                 client.post_inline_comment(
                     repo_name=REPO_NAME,
                     pr_number=PR_NUMBER,
@@ -119,8 +125,6 @@ class TestPostInlineComment:
                     diff_position=3,
                     body="test comment",
                 )
-
-            assert any("Failed to post inline comment" in r.message for r in caplog.records)
 
 
 class TestPostPrSummary:

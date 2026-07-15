@@ -694,9 +694,9 @@ def _output_repo_results(
 
     if output_format == "json":
         out: list[dict] = [
-            {"file": fp, "findings": [f.model_dump(mode="json") for f in _filter_by_severity(findings, threshold)]}
+            {"file": fp, "findings": [f.model_dump(mode="json") for f in filtered]}
             for fp, findings in all_findings.items()
-            if _filter_by_severity(findings, threshold)
+            if (filtered := _filter_by_severity(findings, threshold))
         ]
         print(json.dumps(out, indent=2))
         return
