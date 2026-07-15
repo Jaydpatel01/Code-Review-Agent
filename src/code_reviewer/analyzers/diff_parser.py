@@ -112,7 +112,7 @@ def parse_diff(diff_text: str) -> List[DiffHunk]:
             continue
 
         # --- Hunk header ---
-        if line.startswith("@@ ") and current_file:
+        if line.startswith("@@ ") and current_file is not None:
             _flush_hunk(current_hunk, raw_hunk_lines, hunks)
             result = _open_hunk(line, current_file)
             if result is None:
