@@ -77,6 +77,8 @@ class ASTAnalyzer(ast.NodeVisitor):
 
     def _check_function_length(self, node: ast.AST) -> None:
         """Report if the function body exceeds the configured line limit."""
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return
         if not self.settings.rules.complexity.enabled:
             return
         if not (hasattr(node, 'end_lineno') and hasattr(node, 'lineno')):
@@ -93,6 +95,8 @@ class ASTAnalyzer(ast.NodeVisitor):
 
     def _check_missing_docstring(self, node: ast.AST) -> None:
         """Report missing docstrings on public functions."""
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return
         if not self.settings.rules.docs.enabled:
             return
         if not node.name.startswith("_") and node.name != "__init__":
@@ -107,6 +111,8 @@ class ASTAnalyzer(ast.NodeVisitor):
 
     def _check_mutable_defaults(self, node: ast.AST) -> None:
         """Report mutable default argument values (list/dict/set literals)."""
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return
         if not self.settings.rules.mutable_defaults.enabled:
             return
         if not hasattr(node, 'args'):
@@ -130,6 +136,8 @@ class ASTAnalyzer(ast.NodeVisitor):
 
     def _check_cyclomatic_complexity(self, node: ast.AST) -> None:
         """Report functions whose cyclomatic complexity exceeds configured thresholds."""
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return
         if not self.settings.rules.complexity.enabled:
             return
 

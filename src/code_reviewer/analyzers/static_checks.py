@@ -23,6 +23,21 @@ _CC_BRANCH_TYPES = frozenset([
 ])
 
 
+def _get_ts_line(node) -> int:
+    """Safely extract 1-indexed line number from a tree-sitter node."""
+    if hasattr(node, "start_point") and node.start_point is not None:
+        return node.start_point[0] + 1
+    return 1
+
+
+def _get_ts_length(node) -> int:
+    """Safely extract length in lines from a tree-sitter node."""
+    if hasattr(node, "start_point") and node.start_point is not None and hasattr(node, "end_point") and node.end_point is not None:
+        return node.end_point[0] - node.start_point[0]
+    return 0
+
+
+
 class StaticAnalyzer:
     """Wrapper that delegates to ASTAnalyzer (Python) or Tree-sitter (Multi-language)."""
 
@@ -112,7 +127,7 @@ class StaticAnalyzer:
                 if depth > 6:
                     findings.append(Finding(
                         file_path=file_path,
-                        line_number=node.start_point[0] + 1,
+                        line_number=_get_ts_line(node),
                         severity="HIGH",
                         category="complexity",
                         message=f"Extremely deep nesting ({depth} levels).",
@@ -122,7 +137,7 @@ class StaticAnalyzer:
                 elif depth > max_depth:
                     findings.append(Finding(
                         file_path=file_path,
-                        line_number=node.start_point[0] + 1,
+                        line_number=_get_ts_line(node),
                         severity="MEDIUM",
                         category="complexity",
                         message=f"Deep nesting ({depth} levels).",
@@ -150,11 +165,11 @@ class StaticAnalyzer:
         """
         if not self.settings.rules.complexity.enabled:
             return
-        length = func.end_point[0] - func.start_point[0]
+        length = _get_ts_length(func)
         if length > self.settings.rules.complexity.max_function_length:
             findings.append(Finding(
                 file_path=file_path,
-                line_number=func.start_point[0] + 1,
+                line_number=_get_ts_line(func),
                 severity="MEDIUM",
                 category="complexity",
                 message=f"Function is too long ({length} lines).",
@@ -202,7 +217,7 @@ class StaticAnalyzer:
         if cc > high_cc_threshold:
             findings.append(Finding(
                 file_path=file_path,
-                line_number=func.start_point[0] + 1,
+                line_number=_get_ts_line(func),
                 severity="HIGH",
                 category="complexity",
                 message=f"Function has very high cyclomatic complexity ({cc}).",
@@ -212,7 +227,7 @@ class StaticAnalyzer:
         elif cc > max_cc:
             findings.append(Finding(
                 file_path=file_path,
-                line_number=func.start_point[0] + 1,
+                line_number=_get_ts_line(func),
                 severity="MEDIUM",
                 category="complexity",
                 message=f"Function has high cyclomatic complexity ({cc}).",
@@ -254,7 +269,7 @@ class StaticAnalyzer:
                 if not name.startswith("_"):
                     findings.append(Finding(
                         file_path=file_path,
-                        line_number=func.start_point[0] + 1,
+                        line_number=_get_ts_line(func),
                         severity="LOW",
                         category="docs",
                         message=f"Missing docstring in public function '{name}'.",
@@ -305,7 +320,7 @@ class StaticAnalyzer:
                 if val_str not in {"0", "1"} and not is_constant_assign:
                     findings.append(Finding(
                         file_path=file_path,
-                        line_number=node.start_point[0] + 1,
+                        line_number=_get_ts_line(node),
                         severity="INFO",
                         category="style",
                         message=f"Magic number {val_str} found.",

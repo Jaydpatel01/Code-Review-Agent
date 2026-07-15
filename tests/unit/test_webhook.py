@@ -110,6 +110,7 @@ class TestEventDispatch:
 
     def test_pr_opened_triggers_review_and_returns_200(self, mocker):
         """PR opened event should schedule a background review and return 200 immediately."""
+        mocker.patch.dict("os.environ", {"GITHUB_TOKEN": "test-token"})
         # Mock the background task function so it doesn't try to contact GitHub/LLM
         mock_run = mocker.patch(
             "code_reviewer.api.webhook._run_pr_review",
