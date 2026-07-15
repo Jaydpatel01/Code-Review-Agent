@@ -1,6 +1,5 @@
 """Typer CLI entrypoint for the AI Code Reviewer."""
 
-from code_reviewer.indexer.file_walker import FileWalker
 import asyncio
 import json
 import re
@@ -16,11 +15,12 @@ from rich import box
 from rich.console import Console
 from rich.panel import Panel
 
+from code_reviewer.analyzers.diff_parser import parse_diff
 from code_reviewer.config import Settings, load_settings
 from code_reviewer.core.llm_client import LLMClient, LLMClientError
 from code_reviewer.core.models import Finding, ReviewResult
 from code_reviewer.core.reviewer import DiffReviewer, FileReviewer, combine_findings
-from code_reviewer.analyzers.diff_parser import parse_diff
+from code_reviewer.indexer.file_walker import FileWalker
 
 # ---------------------------------------------------------------------------
 # Severity ordering used for threshold filtering
@@ -584,11 +584,13 @@ def _run_repo_review(
         )
 
     # Step 2: Walk + AST score (all modes)
+    all_findings: dict[str, list[Finding]] = {}
+    risk_tiers: dict[str, str] = {}
     try:
         all_findings, risk_tiers = _run_repo_ast_pass(walker, settings)
     except KeyboardInterrupt:
         typer.echo("\n[Interrupted] Returning partial AST results.", err=True)
-        return {}
+        return all_findings
 
     # Step 3: LLM review (smart + thorough only)
     target_files = _determine_repo_llm_targets(mode, risk_tiers, list(all_findings.keys()))
@@ -638,6 +640,49 @@ def _parse_and_validate_repo_inputs(
     return root, mode_lower, include_patterns, exclude_patterns, settings
 
 
+def _collect_repo_finding_stats(
+    all_findings: dict[str, list[Finding]],
+    threshold: str,
+) -> tuple[list[tuple[str, list[Finding]]], int, int, int]:
+    """Filter findings by severity and compute per-severity counts.
+
+    Returns:
+        (filtered_pairs, high_count, medium_count, low_count)
+        where filtered_pairs is a list of (file_path, filtered_findings)
+        containing only files that have at least one qualifying finding.
+    """
+    filtered_pairs: list[tuple[str, list[Finding]]] = []
+    high_count = medium_count = low_count = 0
+    for fp, findings in all_findings.items():
+        filtered = _filter_by_severity(findings, threshold)
+        if not filtered:
+            continue
+        filtered_pairs.append((fp, filtered))
+        high_count += sum(1 for f in filtered if f.severity == "HIGH")
+        medium_count += sum(1 for f in filtered if f.severity == "MEDIUM")
+        low_count += sum(1 for f in filtered if f.severity in ("LOW", "INFO"))
+    return filtered_pairs, high_count, medium_count, low_count
+
+
+def _render_repo_finding(
+    fp: str,
+    filtered: list[Finding],
+    output_format: str,
+    settings: Settings,
+) -> None:
+    """Render a single file's filtered findings in the requested output format."""
+    if output_format == "github":
+        _print_github_findings(filtered)
+    else:  # pretty
+        footer = f"{len(filtered)} findings | {settings.model}"
+        _print_pretty_findings(
+            filtered,
+            title=fp,
+            show_suggestion=settings.output.show_suggestions,
+            footer=footer,
+        )
+
+
 def _output_repo_results(
     all_findings: dict[str, list[Finding]],
     settings: Settings,
@@ -647,40 +692,22 @@ def _output_repo_results(
     threshold = settings.severity_threshold
     output_format = settings.output.format
 
-    high_count = medium_count = low_count = 0
-    total_findings = 0
-    files_with_findings = 0
-
     if output_format == "json":
-        import json as _json
-        out: list[dict] = []
-        for fp, findings in all_findings.items():
-            filtered = _filter_by_severity(findings, threshold)
-            if filtered:
-                out.append({"file": fp, "findings": [f.model_dump(mode="json") for f in filtered]})
-        print(_json.dumps(out, indent=2))
-    else:
-        for fp, findings in all_findings.items():
-            filtered = _filter_by_severity(findings, threshold)
-            if not filtered:
-                continue
-            files_with_findings += 1
-            total_findings += len(filtered)
-            high_count += sum(1 for f in filtered if f.severity == "HIGH")
-            medium_count += sum(1 for f in filtered if f.severity == "MEDIUM")
-            low_count += sum(1 for f in filtered if f.severity in ("LOW", "INFO"))
+        out: list[dict] = [
+            {"file": fp, "findings": [f.model_dump(mode="json") for f in _filter_by_severity(findings, threshold)]}
+            for fp, findings in all_findings.items()
+            if _filter_by_severity(findings, threshold)
+        ]
+        print(json.dumps(out, indent=2))
+        return
 
-            if output_format == "github":
-                _print_github_findings(filtered)
-            else:  # pretty
-                footer = f"{len(filtered)} findings | {settings.model}"
-                _print_pretty_findings(
-                    filtered,
-                    title=fp,
-                    show_suggestion=settings.output.show_suggestions,
-                    footer=footer,
-                )
+    filtered_pairs, high_count, medium_count, low_count = _collect_repo_finding_stats(
+        all_findings, threshold
+    )
+    for fp, filtered in filtered_pairs:
+        _render_repo_finding(fp, filtered, output_format, settings)
 
+    total_findings = sum(len(f) for _, f in filtered_pairs)
     typer.echo(
         f"\nReviewed {len(all_findings)} files | {total_findings} findings "
         f"({high_count} high, {medium_count} medium, {low_count} low) | "
