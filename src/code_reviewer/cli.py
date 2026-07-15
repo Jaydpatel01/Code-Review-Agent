@@ -774,6 +774,53 @@ def review_repo_cmd(
     _output_repo_results(all_findings, settings, elapsed)
 
 
+@app.command("index")
+def index_cmd(
+    path: Path = typer.Argument(
+        Path("."),
+        help="Directory to index (default: current directory)",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Re-index all files even if unchanged",
+    ),
+):
+    """Index the codebase into a vector store for semantic search.
+
+    This command chunks Python files into semantic units (functions, classes,
+    methods), generates embeddings, and stores them in ChromaDB for fast
+    similarity search.
+
+    By default, only changed files are re-indexed (incremental indexing).
+    Use --force to re-index all files.
+    """
+    from code_reviewer.indexer.indexer import CodebaseIndexer
+
+    root = path.resolve()
+    
+    if not root.is_dir():
+        console.print(f"[red]Error: '{path}' is not a directory.[/red]")
+        raise typer.Exit(code=1)
+
+    console.print(f"[bold green]Indexing {root}...[/bold green]")
+    
+    try:
+        indexer = CodebaseIndexer(root)
+        result = indexer.index(force=force)
+        
+        console.print(
+            f"[bold green]Done.[/bold green] "
+            f"{result.indexed_files} files indexed, "
+            f"{result.skipped_files} unchanged, "
+            f"{result.total_chunks} chunks, "
+            f"{result.elapsed_seconds:.1f}s"
+        )
+    except Exception as e:
+        console.print(f"[red]Indexing failed: {e}[/red]")
+        raise typer.Exit(code=1)
+
+
 @app.command("serve")
 def serve_cmd(
     host: str = typer.Option("0.0.0.0", "--host", help="Host to bind to"),
