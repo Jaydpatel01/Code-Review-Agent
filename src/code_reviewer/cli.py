@@ -156,7 +156,7 @@ def _format_finding_pretty_lines(finding: Finding, show_suggestion: bool) -> lis
         finding.message,
     ]
     if show_suggestion and finding.suggestion:
-        lines.append(f"[green]→ {finding.suggestion}[/green]")
+        lines.append(f"[green]-> {finding.suggestion}[/green]")
     return lines
 
 
