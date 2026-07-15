@@ -1,5 +1,6 @@
 """Typer CLI entrypoint for the AI Code Reviewer."""
 
+from code_reviewer.indexer.file_walker import FileWalker
 import asyncio
 import json
 import re
