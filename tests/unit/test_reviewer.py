@@ -180,3 +180,28 @@ def test_combine_findings_deduplication():
     # LLM style finding on the same line is kept (different category)
     assert combined[1].source == "llm"
     assert combined[1].category == "style"
+
+
+def test_apply_filters_none_settings():
+    """Test that _apply_filters gracefully defaults to True when rules config is None."""
+    from code_reviewer.core.reviewer import _apply_filters
+    
+    settings = Settings()
+    settings.rules = None  # Force None
+    
+    findings = [
+        Finding(
+            file_path="app.py",
+            line_number=10,
+            severity="HIGH",
+            category="complexity",
+            message="Complexity finding",
+            suggestion="Fix it",
+            source="llm",
+        )
+    ]
+    
+    res = _apply_filters(findings, settings)
+    assert len(res) == 1
+    assert res[0].category == "complexity"
+

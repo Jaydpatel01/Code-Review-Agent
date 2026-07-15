@@ -1,5 +1,6 @@
 """Unit tests for LiteLLM client abstraction."""
 
+import litellm
 import pytest
 from unittest.mock import MagicMock
 from code_reviewer.core.llm_client import LLMClient, LLMClientError
@@ -59,14 +60,20 @@ def test_llm_client_structured_completion(mocker):
 
 
 def test_llm_client_retry_logic(mocker):
-    """Test LLMClient retry logic executing for transient errors."""
+    """Test LLMClient retry logic executing for transient (retryable) errors."""
     mock_completion = mocker.patch("litellm.completion")
 
     mock_response = MagicMock()
     mock_response.choices = [MagicMock()]
     mock_response.choices[0].message.content = "Success"
 
-    mock_completion.side_effect = [Exception("API Error"), Exception("API Error"), mock_response]
+    transient = litellm.APIError(
+        status_code=503,
+        message="Service Unavailable",
+        llm_provider="test",
+        model="test-model",
+    )
+    mock_completion.side_effect = [transient, transient, mock_response]
 
     # Setup sleep mock so the test runs instantly
     mocker.patch("time.sleep")
@@ -80,9 +87,15 @@ def test_llm_client_retry_logic(mocker):
 
 
 def test_llm_client_failure_exhaustion(mocker):
-    """Test LLMClient raising LLMClientError on total retry failure."""
+    """Test LLMClient raising LLMClientError after retryable errors are exhausted."""
     mock_completion = mocker.patch("litellm.completion")
-    mock_completion.side_effect = Exception("API Connection failure")
+    transient = litellm.APIError(
+        status_code=503,
+        message="API Connection failure",
+        llm_provider="test",
+        model="test-model",
+    )
+    mock_completion.side_effect = transient
     mocker.patch("time.sleep")
 
     client = LLMClient(max_retries=2)
@@ -91,3 +104,36 @@ def test_llm_client_failure_exhaustion(mocker):
 
     assert "LLM execution failed after" in str(excinfo.value)
     assert mock_completion.call_count == 3
+
+
+def test_non_retryable_exception_propagates_immediately(mocker):
+    """Programming errors (TypeError, NameError, …) must NOT be retried."""
+    mock_completion = mocker.patch("litellm.completion")
+    mock_completion.side_effect = TypeError("unexpected keyword argument")
+
+    client = LLMClient(max_retries=3)
+    with pytest.raises(TypeError):
+        client.generate_completion([{"role": "user", "content": "hello"}])
+
+    # Should have failed on the very first attempt — no retries
+    assert mock_completion.call_count == 1
+
+
+def test_llm_client_validation_failure(mocker):
+    """Test that LLMClient raises LLMClientError if JSON is corrupt or invalid."""
+    mock_completion = mocker.patch("litellm.completion")
+
+    # Return corrupt JSON
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.content = "Not a valid JSON"
+    mock_completion.return_value = mock_response
+
+    client = LLMClient(max_retries=1)
+    with pytest.raises(LLMClientError) as excinfo:
+        client.generate_completion(
+            [{"role": "user", "content": "hello"}], response_format=LLMReviewResponse
+        )
+
+    assert "Failed to parse LLM response as JSON" in str(excinfo.value)
+

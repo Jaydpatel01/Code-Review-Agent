@@ -1,11 +1,11 @@
 """PR review orchestrator — ties together diff parsing, static analysis, LLM review, and GitHub comments."""
 
 import logging
+import re
 from collections import defaultdict
 from typing import Optional
 
 from code_reviewer.analyzers.diff_parser import parse_diff
-from code_reviewer.analyzers.static_checks import StaticAnalyzer
 from code_reviewer.config import Settings
 from code_reviewer.core.llm_client import LLMClient
 from code_reviewer.core.models import Finding, ReviewResult
@@ -13,6 +13,9 @@ from code_reviewer.core.reviewer import DiffReviewer, combine_findings
 from code_reviewer.integrations.github_client import GitHubClient
 
 logger = logging.getLogger(__name__)
+
+# Compiled once at import time — used by _build_diff_position_map.
+_HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 SEVERITY_ORDER = {"HIGH": 0, "MEDIUM": 1, "LOW": 2, "INFO": 3}
 SEVERITY_EMOJI = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢", "INFO": "ℹ️"}
@@ -42,7 +45,6 @@ class PRReviewer:
         self.github_client = github_client
         self.llm_client = llm_client
         self.settings = settings
-        self._static_analyzer = StaticAnalyzer(settings)
         self._diff_reviewer = DiffReviewer(llm_client, settings)
 
     # ------------------------------------------------------------------
@@ -168,9 +170,6 @@ class PRReviewer:
         position = 0
         current_new_line = 0
 
-        import re
-        hunk_header_re = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
-
         for line in raw_diff.splitlines():
             if line.startswith("diff --git"):
                 current_file = None
@@ -189,7 +188,7 @@ class PRReviewer:
             if current_file is None:
                 continue
 
-            m = hunk_header_re.match(line)
+            m = _HUNK_HEADER_RE.match(line)
             if m:
                 # Hunk header is always position 1 (within this hunk's block).
                 # Per the GitHub docs, position is reset per-file, not per-hunk.
