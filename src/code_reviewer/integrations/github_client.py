@@ -135,6 +135,9 @@ class GitHubClient:
             file_path:     Path of the file being commented on.
             diff_position: Position within the diff (NOT the file line number).
             body:          Markdown comment body.
+
+        Raises:
+            httpx.HTTPStatusError: If the GitHub API returns a non-2xx status.
         """
         url = (
             f"https://api.github.com/repos/{repo_name}/pulls/{pr_number}/reviews"
@@ -156,24 +159,14 @@ class GitHubClient:
             ],
         }
         response = httpx.post(url, json=payload, headers=headers)
-        if response.status_code not in (200, 201):
-            logger.warning(
-                "Failed to post inline comment on %s#%d %s@%d: %s %s",
-                repo_name,
-                pr_number,
-                file_path,
-                diff_position,
-                response.status_code,
-                response.text,
-            )
-        else:
-            logger.debug(
-                "Posted inline comment on %s#%d %s@pos=%d",
-                repo_name,
-                pr_number,
-                file_path,
-                diff_position,
-            )
+        response.raise_for_status()
+        logger.debug(
+            "Posted inline comment on %s#%d %s@pos=%d",
+            repo_name,
+            pr_number,
+            file_path,
+            diff_position,
+        )
 
     def post_pr_summary(
         self,
