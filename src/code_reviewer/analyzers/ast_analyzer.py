@@ -81,9 +81,9 @@ class ASTAnalyzer(ast.NodeVisitor):
             return
         if not self.settings.rules.complexity.enabled:
             return
-        if not (hasattr(node, 'end_lineno') and hasattr(node, 'lineno')):
+        if not (hasattr(node, 'end_lineno') and hasattr(node, 'lineno') and node.end_lineno is not None and node.lineno is not None):
             return
-        length = node.end_lineno - node.lineno
+        length = node.end_lineno - node.lineno + 1
         if length > self.settings.rules.complexity.max_function_length:
             self.report_finding(
                 node,
@@ -118,7 +118,9 @@ class ASTAnalyzer(ast.NodeVisitor):
         if not hasattr(node, 'args'):
             return
         from itertools import chain
-        defaults = chain(node.args.defaults, getattr(node.args, 'kw_defaults', []) or [])
+        defaults_list = getattr(node.args, 'defaults', []) or []
+        kw_defaults_list = getattr(node.args, 'kw_defaults', []) or []
+        defaults = chain(defaults_list, kw_defaults_list)
         for default in defaults:
             if default is None:
                 continue

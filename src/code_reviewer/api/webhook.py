@@ -127,8 +127,14 @@ async def webhook(
                     detail="GITHUB_TOKEN is not configured on the server.",
                 )
 
-            repo_name: str = payload["repository"]["full_name"]
-            pr_number: int = payload["pull_request"]["number"]
+            repo = payload.get("repository", {})
+            repo_name = repo.get("full_name") if isinstance(repo, dict) else None
+            pr_data = payload.get("pull_request", {})
+            pr_number = pr_data.get("number") if isinstance(pr_data, dict) else None
+
+            if not repo_name or not pr_number:
+                return {"status": "ignored", "reason": "missing repository or pull_request data"}
+
             logger.info(
                 "Scheduling review for %s#%d (action=%s)",
                 repo_name,
