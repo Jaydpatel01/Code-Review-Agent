@@ -53,7 +53,7 @@ def _verify_signature(payload_bytes: bytes, signature_header: str | None) -> Non
         )
 
 
-async def _run_pr_review(repo_name: str, pr_number: int) -> None:
+async def _run_pr_review(repo_name: str, pr_number: int, github_token: str) -> None:
     """
     Background task: run the full review pipeline on a pull request.
 
@@ -68,7 +68,6 @@ async def _run_pr_review(repo_name: str, pr_number: int) -> None:
         from code_reviewer.integrations.github_client import GitHubClient
         from code_reviewer.core.pr_reviewer import PRReviewer
 
-        github_token = os.environ.get("GITHUB_TOKEN", "")
         settings = load_settings()
         llm_client = LLMClient(model=settings.model, max_tokens=settings.max_tokens)
         github_client = GitHubClient(github_token)
@@ -121,6 +120,13 @@ async def webhook(
     if x_github_event == "pull_request":
         action = payload.get("action", "")
         if action in HANDLED_PR_ACTIONS:
+            github_token = os.environ.get("GITHUB_TOKEN", "")
+            if not github_token:
+                raise HTTPException(
+                    status_code=500,
+                    detail="GITHUB_TOKEN is not configured on the server.",
+                )
+
             repo_name: str = payload["repository"]["full_name"]
             pr_number: int = payload["pull_request"]["number"]
             logger.info(
@@ -130,7 +136,7 @@ async def webhook(
                 action,
             )
             # Return 200 immediately; review runs asynchronously.
-            background_tasks.add_task(_run_pr_review, repo_name, pr_number)
+            background_tasks.add_task(_run_pr_review, repo_name, pr_number, github_token)
             return {"status": "review_scheduled", "pr": pr_number}
 
         return {"status": "ignored", "reason": f"unhandled action '{action}'"}

@@ -61,3 +61,25 @@ def test_parse_new_file():
     assert hunk.added_lines[0] == (1, 'def setup():')
     assert hunk.added_lines[1] == (2, '    return True')
     assert len(hunk.removed_lines) == 0
+
+
+def test_parse_empty_added_range():
+    """Verify that a hunk with new_len=0 yields an empty range (end_line = start_line - 1)."""
+    diff_text = """\
+diff --git a/app.py b/app.py
+--- a/app.py
++++ b/app.py
+@@ -10,3 +10,0 @@
+-    old_line_1
+-    old_line_2
+-    old_line_3
+"""
+    hunks = parse_diff(diff_text)
+    assert len(hunks) == 1
+    hunk = hunks[0]
+    assert hunk.file_path == "app.py"
+    assert hunk.start_line == 10
+    assert hunk.end_line == 9  # 10 + 0 - 1
+    assert len(hunk.added_lines) == 0
+    assert len(hunk.removed_lines) == 3
+
