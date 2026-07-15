@@ -190,6 +190,33 @@ Review only the lines that have changed (diffs) rather than entire files.
   uv run code-reviewer review file src/code_reviewer/config.py --output github
   ```
 
+#### Reviewing Repositories
+
+Review an entire codebase or directory recursively, with smart static filtering.
+
+* **Smart Mode (Default)**:
+  Runs AST analysis on all files, then runs LLM review only on files classified as `HIGH` or `MEDIUM` risk:
+  ```bash
+  uv run code-reviewer review repo . --mode smart
+  ```
+
+* **Thorough Mode**:
+  Runs AST analysis and LLM review on all matching files:
+  ```bash
+  uv run code-reviewer review repo src/ --mode thorough
+  ```
+
+* **Static-Only Mode (Free & Instant)**:
+  Runs AST analysis only on all matching files without any LLM/API calls:
+  ```bash
+  uv run code-reviewer review repo . --mode static-only
+  ```
+
+* **Custom Include/Exclude and Safety Limits**:
+  ```bash
+  uv run code-reviewer review repo . --include "*.py,*.js" --exclude "tests,build" --max-files 100
+  ```
+
 ---
 
 ## Development & Testing

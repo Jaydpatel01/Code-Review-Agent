@@ -1,5 +1,6 @@
 """Typer CLI entrypoint for the AI Code Reviewer."""
 
+from code_reviewer.indexer.file_walker import FileWalker
 import asyncio
 import json
 import re
@@ -496,6 +497,69 @@ def review_diff_cmd(
 _VALID_REPO_MODES = ["smart", "thorough", "static-only"]
 
 
+def _run_repo_ast_pass(
+    walker: "FileWalker",
+    settings: Settings,
+) -> tuple[dict[str, list[Finding]], dict[str, str]]:
+    """Walk files and score their risk tiers using AST analysis."""
+    from code_reviewer.indexer.risk_scorer import score_file_risk
+
+    all_findings: dict[str, list[Finding]] = {}
+    risk_tiers: dict[str, str] = {}
+
+    for i, file_path in enumerate(walker.walk(), 1):
+        typer.echo(f"  [{i}] {file_path} ", nl=False)
+        tier, findings = score_file_risk(file_path, settings)
+        fp_str = str(file_path)
+        risk_tiers[fp_str] = tier
+        all_findings[fp_str] = findings
+        typer.echo(tier)
+    return all_findings, risk_tiers
+
+
+def _determine_repo_llm_targets(
+    mode: str,
+    risk_tiers: dict[str, str],
+    all_files: list[str],
+) -> list[str]:
+    """Determine which files should be reviewed by the LLM based on the mode."""
+    if mode == "static-only":
+        return []
+
+    if mode == "smart":
+        high_medium = [fp for fp, tier in risk_tiers.items() if tier in ("HIGH", "MEDIUM")]
+        skipped = [fp for fp, tier in risk_tiers.items() if tier == "LOW"]
+        typer.echo(
+            f"\nRunning LLM review on {len(high_medium)} HIGH/MEDIUM risk files "
+            f"(skipping {len(skipped)} LOW files)..."
+        )
+        return high_medium
+
+    # thorough mode
+    typer.echo(f"\nRunning LLM review on all {len(all_files)} files...")
+    return all_files
+
+
+async def _run_repo_llm_pass_async(
+    target_files: list[str],
+    settings: Settings,
+) -> dict[str, ReviewResult]:
+    """Run LLM reviews on multiple target files concurrently using asyncio.to_thread."""
+    async def _review_one(fp: str) -> tuple[str, ReviewResult | None]:
+        typer.echo(f"  LLM -> {fp}...")
+        llm_client = LLMClient(model=settings.model, max_tokens=settings.max_tokens)
+        reviewer = FileReviewer(llm_client=llm_client, settings=settings)
+        try:
+            res = await asyncio.to_thread(reviewer.review_file, fp)
+            return fp, res
+        except Exception as e:
+            typer.echo(f"  [WARN] LLM failed for {fp}: {e}", err=True)
+            return fp, None
+
+    results = await asyncio.gather(*[_review_one(fp) for fp in target_files])
+    return {fp: res for fp, res in results if res is not None}
+
+
 def _run_repo_review(
     root: "Path",
     mode: str,
@@ -506,13 +570,9 @@ def _run_repo_review(
 ) -> dict[str, list[Finding]]:
     """Core logic for repo-level review across all three modes.
 
-    Returns a mapping of file_path → findings (AST-only in static-only mode;
-    AST + LLM in smart/thorough).  On KeyboardInterrupt, prints partial results
-    collected so far and returns them instead of raising.
+    Returns a mapping of file_path -> findings.
     """
     from code_reviewer.indexer.file_walker import FileWalker
-    from code_reviewer.indexer.risk_scorer import score_file_risk
-    from pathlib import Path as _Path
 
     walker = FileWalker(root, include=include_patterns, exclude=exclude_patterns, max_files=max_files)
     total = walker.count()
@@ -524,52 +584,108 @@ def _run_repo_review(
         )
 
     # Step 2: Walk + AST score (all modes)
-    all_findings: dict[str, list[Finding]] = {}
-    risk_tiers: dict[str, str] = {}
-
     try:
-        for i, file_path in enumerate(walker.walk(), 1):
-            typer.echo(f"  [{i}] {file_path} ", nl=False)
-            tier, findings = score_file_risk(file_path, settings)
-            risk_tiers[str(file_path)] = tier
-            all_findings[str(file_path)] = findings
-            tier_color = "HIGH" if tier == "HIGH" else ("MEDIUM" if tier == "MEDIUM" else "LOW")
-            typer.echo(tier_color)
+        all_findings, risk_tiers = _run_repo_ast_pass(walker, settings)
     except KeyboardInterrupt:
         typer.echo("\n[Interrupted] Returning partial AST results.", err=True)
-        return all_findings
+        return {}
 
     # Step 3: LLM review (smart + thorough only)
-    if mode == "static-only":
+    target_files = _determine_repo_llm_targets(mode, risk_tiers, list(all_findings.keys()))
+    if not target_files:
         return all_findings
 
-    if mode == "smart":
-        high_medium = [fp for fp, tier in risk_tiers.items() if tier in ("HIGH", "MEDIUM")]
-        skipped = [fp for fp, tier in risk_tiers.items() if tier == "LOW"]
-        typer.echo(
-            f"\nRunning LLM review on {len(high_medium)} HIGH/MEDIUM risk files "
-            f"(skipping {len(skipped)} LOW files)..."
-        )
-        target_files = high_medium
-    else:  # thorough
-        typer.echo(f"\nRunning LLM review on all {len(all_findings)} files...")
-        target_files = list(all_findings.keys())
-
     try:
-        for fp in target_files:
-            typer.echo(f"  LLM -> {fp}...")
-            try:
-                llm_result = _run_file_review(str(fp), settings)
-                all_findings[fp] = combine_findings(
-                    all_findings[fp],
-                    llm_result.findings,
-                )
-            except Exception as e:
-                typer.echo(f"  [WARN] LLM failed for {fp}: {e}", err=True)
+        # Run async LLM reviews concurrently using asyncio
+        llm_results = asyncio.run(_run_repo_llm_pass_async(target_files, settings))
+        for fp, llm_result in llm_results.items():
+            all_findings[fp] = combine_findings(all_findings[fp], llm_result.findings)
     except KeyboardInterrupt:
         typer.echo("\n[Interrupted] Returning partial LLM results.", err=True)
 
     return all_findings
+
+
+def _parse_and_validate_repo_inputs(
+    path: str,
+    mode: str,
+    include: str,
+    exclude: str,
+    severity: Optional[str],
+    output: Optional[str],
+) -> tuple["Path", str, list[str], list[str], Settings]:
+    """Validate repo command inputs, apply overrides, and load settings."""
+    from pathlib import Path
+
+    mode_lower = mode.lower()
+    if mode_lower not in _VALID_REPO_MODES:
+        typer.echo(
+            f"[ERROR] Invalid mode '{mode_lower}'. Must be one of: {', '.join(_VALID_REPO_MODES)}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    settings = _apply_cli_overrides(load_settings(), severity, output)
+
+    root = Path(path).expanduser().resolve()
+    if not root.is_dir():
+        typer.echo(f"[ERROR] '{path}' is not a directory.", err=True)
+        raise typer.Exit(code=1)
+
+    include_patterns = [p.strip() for p in include.split(",") if p.strip()]
+    exclude_patterns = [p.strip() for p in exclude.split(",") if p.strip()]
+
+    return root, mode_lower, include_patterns, exclude_patterns, settings
+
+
+def _output_repo_results(
+    all_findings: dict[str, list[Finding]],
+    settings: Settings,
+    elapsed: float,
+) -> None:
+    """Filter, count, format, and display findings from repository review."""
+    threshold = settings.severity_threshold
+    output_format = settings.output.format
+
+    high_count = medium_count = low_count = 0
+    total_findings = 0
+    files_with_findings = 0
+
+    if output_format == "json":
+        import json as _json
+        out: list[dict] = []
+        for fp, findings in all_findings.items():
+            filtered = _filter_by_severity(findings, threshold)
+            if filtered:
+                out.append({"file": fp, "findings": [f.model_dump(mode="json") for f in filtered]})
+        print(_json.dumps(out, indent=2))
+    else:
+        for fp, findings in all_findings.items():
+            filtered = _filter_by_severity(findings, threshold)
+            if not filtered:
+                continue
+            files_with_findings += 1
+            total_findings += len(filtered)
+            high_count += sum(1 for f in filtered if f.severity == "HIGH")
+            medium_count += sum(1 for f in filtered if f.severity == "MEDIUM")
+            low_count += sum(1 for f in filtered if f.severity in ("LOW", "INFO"))
+
+            if output_format == "github":
+                _print_github_findings(filtered)
+            else:  # pretty
+                footer = f"{len(filtered)} findings | {settings.model}"
+                _print_pretty_findings(
+                    filtered,
+                    title=fp,
+                    show_suggestion=settings.output.show_suggestions,
+                    footer=footer,
+                )
+
+    typer.echo(
+        f"\nReviewed {len(all_findings)} files | {total_findings} findings "
+        f"({high_count} high, {medium_count} medium, {low_count} low) | "
+        f"{elapsed:.1f}s"
+    )
 
 
 # ===========================================================================
@@ -615,26 +731,9 @@ def review_repo_cmd(
       smart        AST on all files, LLM only on HIGH/MEDIUM risk files.
       thorough     AST + LLM on every file.
     """
-    from pathlib import Path
-
-    # Validate mode
-    mode = mode.lower()
-    if mode not in _VALID_REPO_MODES:
-        typer.echo(
-            f"[ERROR] Invalid mode '{mode}'. Must be one of: {', '.join(_VALID_REPO_MODES)}",
-            err=True,
-        )
-        raise typer.Exit(code=1)
-
-    settings = _apply_cli_overrides(load_settings(), severity, output)
-
-    root = Path(path).expanduser().resolve()
-    if not root.is_dir():
-        typer.echo(f"[ERROR] '{path}' is not a directory.", err=True)
-        raise typer.Exit(code=1)
-
-    include_patterns = [p.strip() for p in include.split(",") if p.strip()]
-    exclude_patterns: list[str] = [p.strip() for p in exclude.split(",") if p.strip()]
+    root, mode, include_patterns, exclude_patterns, settings = _parse_and_validate_repo_inputs(
+        path, mode, include, exclude, severity, output
+    )
 
     typer.echo(f"Reviewing [{mode.upper()}] {root}")
     start = time.perf_counter()
@@ -645,49 +744,7 @@ def review_repo_cmd(
 
     elapsed = time.perf_counter() - start
 
-    # Step 4: Filter and output
-    threshold = settings.severity_threshold
-    output_format = settings.output.format
-
-    high_count = medium_count = low_count = 0
-    total_findings = 0
-    files_with_findings = 0
-
-    if output_format == "json":
-        import json as _json
-        out: list[dict] = []
-        for fp, findings in all_findings.items():
-            filtered = _filter_by_severity(findings, threshold)
-            if filtered:
-                out.append({"file": fp, "findings": [f.model_dump(mode="json") for f in filtered]})
-        print(_json.dumps(out, indent=2))
-    else:
-        for fp, findings in all_findings.items():
-            filtered = _filter_by_severity(findings, threshold)
-            if not filtered:
-                continue
-            files_with_findings += 1
-            total_findings += len(filtered)
-            high_count += sum(1 for f in filtered if f.severity == "HIGH")
-            medium_count += sum(1 for f in filtered if f.severity == "MEDIUM")
-            low_count += sum(1 for f in filtered if f.severity in ("LOW", "INFO"))
-
-            if output_format == "github":
-                _print_github_findings(filtered)
-            else:  # pretty
-                footer = f"{len(filtered)} findings | {settings.model}"
-                _print_pretty_findings(
-                    filtered,
-                    title=fp,
-                    show_suggestion=settings.output.show_suggestions,
-                    footer=footer,
-                )
-
-    typer.echo(
-        f"\nReviewed {len(all_findings)} files | {total_findings} findings "
-        f"({high_count} high, {medium_count} medium, {low_count} low) | "
-        f"{elapsed:.1f}s"
-    )
+    _output_repo_results(all_findings, settings, elapsed)
 
 
 @app.command("serve")
