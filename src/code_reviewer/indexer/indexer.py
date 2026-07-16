@@ -6,12 +6,14 @@ changed files.
 """
 
 import logging
+import pickle
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from code_reviewer.indexer.cache import FileHashCache
-from code_reviewer.indexer.chunker import PythonChunker
+from code_reviewer.indexer.chunker import PythonChunker, CodeChunk
+from code_reviewer.indexer.dependency_graph import DependencyGraph
 from code_reviewer.indexer.embedder import ChunkEmbedder
 from code_reviewer.indexer.file_walker import FileWalker
 from code_reviewer.indexer.store import CodebaseStore
@@ -27,12 +29,14 @@ class IndexResult:
         indexed_files: Number of files that were indexed
         skipped_files: Number of files skipped (unchanged)
         total_chunks: Total number of code chunks created
+        total_edges: Total number of call edges in dependency graph
         elapsed_seconds: Time taken to complete indexing
     """
 
     indexed_files: int
     skipped_files: int
     total_chunks: int
+    total_edges: int
     elapsed_seconds: float
 
 
@@ -63,6 +67,11 @@ class CodebaseIndexer:
         self.embedder = ChunkEmbedder()
         self.store = CodebaseStore(project_root)
         self.cache = FileHashCache(project_root)
+        self.graph = DependencyGraph()
+        
+        # Path to persist the dependency graph
+        graph_path = project_root / ".code-reviewer" / "cache" / "graph.pkl"
+        self.graph_path = graph_path
 
     def index(self, force: bool = False) -> IndexResult:
         """Index the codebase into the vector store.
@@ -83,14 +92,17 @@ class CodebaseIndexer:
                - Generate embeddings for all chunks
                - Store chunks in the vector database
                - Update file metadata and hash cache
-            3. Save cache to disk
-            4. Return statistics
+            3. Build dependency graph from all chunks
+            4. Save graph to disk
+            5. Save cache to disk
+            6. Return statistics
         """
         start_time = time.perf_counter()
 
         indexed_count = 0
         skipped_count = 0
         total_chunks = 0
+        all_chunks: list[CodeChunk] = []  # Collect all chunks for graph building
 
         logger.info(f"Starting index of {self.root}")
 
@@ -115,6 +127,9 @@ class CodebaseIndexer:
             if not chunks:
                 logger.debug(f"No chunks extracted from {file_path}")
                 continue
+
+            # Collect chunks for graph building
+            all_chunks.extend(chunks)
 
             # Delete stale chunks for this file
             self.store.delete_by_file(str(file_path))
@@ -145,20 +160,61 @@ class CodebaseIndexer:
                 f"({indexed_count} files so far)"
             )
 
+        # Build dependency graph from all chunks
+        logger.info("Building dependency graph...")
+        self.graph.build(all_chunks)
+        
+        # Save graph to disk
+        try:
+            self.graph_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.graph_path, "wb") as f:
+                pickle.dump(self.graph, f)
+            logger.info(f"Dependency graph saved to {self.graph_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save dependency graph: {e}")
+
         # Save cache to disk
         self.cache.save()
 
         elapsed_seconds = time.perf_counter() - start_time
+        total_edges = self.graph.graph.number_of_edges()
 
         logger.info(
             f"Indexing complete: {indexed_count} files indexed, "
             f"{skipped_count} skipped, {total_chunks} chunks, "
-            f"{elapsed_seconds:.1f}s"
+            f"{total_edges} edges, {elapsed_seconds:.1f}s"
         )
 
         return IndexResult(
             indexed_files=indexed_count,
             skipped_files=skipped_count,
             total_chunks=total_chunks,
+            total_edges=total_edges,
             elapsed_seconds=elapsed_seconds,
         )
+
+    @classmethod
+    def load_graph(cls, project_root: Path) -> DependencyGraph | None:
+        """Load the dependency graph from disk.
+
+        Args:
+            project_root: Root directory of the project
+
+        Returns:
+            DependencyGraph if the graph file exists and can be loaded,
+            None otherwise.
+        """
+        graph_path = project_root / ".code-reviewer" / "cache" / "graph.pkl"
+        
+        if not graph_path.exists():
+            logger.debug(f"Dependency graph not found at {graph_path}")
+            return None
+        
+        try:
+            with open(graph_path, "rb") as f:
+                graph = pickle.load(f)
+            logger.info(f"Loaded dependency graph from {graph_path}")
+            return graph
+        except Exception as e:
+            logger.warning(f"Failed to load dependency graph: {e}")
+            return None

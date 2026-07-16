@@ -509,8 +509,9 @@ _VALID_REPO_MODES = ["smart", "thorough", "static-only"]
 def _run_repo_ast_pass(
     walker: "FileWalker",
     settings: Settings,
+    graph: "Optional[DependencyGraph]" = None,
 ) -> tuple[dict[str, list[Finding]], dict[str, str]]:
-    """Walk files and score their risk tiers using AST analysis."""
+    """Walk files and score their risk tiers using AST analysis and centrality."""
     from code_reviewer.indexer.risk_scorer import score_file_risk
 
     all_findings: dict[str, list[Finding]] = {}
@@ -518,7 +519,7 @@ def _run_repo_ast_pass(
 
     for i, file_path in enumerate(walker.walk(), 1):
         typer.echo(f"  [{i}] {file_path} ", nl=False)
-        tier, findings = score_file_risk(file_path, settings)
+        tier, findings = score_file_risk(file_path, settings, graph=graph)
         fp_str = str(file_path)
         risk_tiers[fp_str] = tier
         all_findings[fp_str] = findings
@@ -599,6 +600,7 @@ def _run_repo_review(
     Returns a mapping of file_path -> findings.
     """
     from code_reviewer.indexer.file_walker import FileWalker
+    from code_reviewer.indexer.indexer import CodebaseIndexer
 
     walker = FileWalker(root, include=include_patterns, exclude=exclude_patterns, max_files=max_files)
     total = walker.count()
@@ -609,11 +611,16 @@ def _run_repo_review(
             f"Use --max-files 0 for all {total}."
         )
 
+    # Load dependency graph if available
+    graph = CodebaseIndexer.load_graph(root)
+    if graph is not None:
+        typer.echo(f"  Loaded dependency graph with {graph.graph.number_of_nodes()} nodes, {graph.graph.number_of_edges()} edges")
+
     # Step 2: Walk + AST score (all modes)
     all_findings: dict[str, list[Finding]] = {}
     risk_tiers: dict[str, str] = {}
     try:
-        all_findings, risk_tiers = _run_repo_ast_pass(walker, settings)
+        all_findings, risk_tiers = _run_repo_ast_pass(walker, settings, graph=graph)
     except KeyboardInterrupt:
         typer.echo("\n[Interrupted] Returning partial AST results.", err=True)
         return all_findings
@@ -709,8 +716,68 @@ def _render_repo_finding(
         )
 
 
+def _print_cross_file_findings(
+    findings: list,  # list[CorrelatedFinding]
+    output_format: str,
+) -> None:
+    """Print cross-file findings section.
+
+    Args:
+        findings: List of CorrelatedFinding objects
+        output_format: Output format (pretty or github)
+    """
+    if output_format == "pretty":
+        # Pretty format with section header
+        typer.echo("\n" + "─" * 70)
+        typer.echo(f"CROSS-FILE FINDINGS ({len(findings)} patterns found)")
+        typer.echo("─" * 70)
+
+        for finding in findings:
+            # Severity badge
+            severity_color = {
+                "HIGH": "red",
+                "MEDIUM": "yellow",
+                "LOW": "blue",
+                "INFO": "cyan",
+            }.get(finding.severity, "white")
+
+            typer.echo(f"\n[{finding.severity}] {finding.pattern}")
+            typer.echo(f"  Affects {len(finding.affected_files)} files:")
+            for fp in finding.affected_files:
+                typer.echo(f"    • {fp}")
+
+            if finding.root_cause_file:
+                typer.echo(
+                    f"  Root cause: {finding.root_cause_file}:{finding.root_cause_line}"
+                )
+                typer.echo(f"  Reason: {finding.root_cause_reason}")
+
+        typer.echo("─" * 70 + "\n")
+
+    elif output_format == "github":
+        # GitHub annotations format
+        for finding in findings:
+            # Use root cause location if available, otherwise first affected file
+            if finding.root_cause_file and finding.root_cause_line:
+                file_path = finding.root_cause_file
+                line_number = finding.root_cause_line
+            elif finding.affected_lines:
+                file_path, line_number = finding.affected_lines[0]
+            else:
+                continue
+
+            # GitHub annotation format
+            annotation = (
+                f"::warning file={file_path},line={line_number},"
+                f"title=Cross-file finding ({finding.severity})::"
+                f"{finding.pattern} (affects {len(finding.affected_files)} files)"
+            )
+            print(annotation)
+
+
 def _output_repo_results(
     all_findings: dict[str, list[Finding]],
+    correlated_findings: list,  # list[CorrelatedFinding]
     settings: Settings,
     elapsed: float,
 ) -> None:
@@ -719,14 +786,40 @@ def _output_repo_results(
     output_format = settings.output.format
 
     if output_format == "json":
-        out: list[dict] = [
+        # Include cross-file findings in JSON output
+        from code_reviewer.core.correlator import CorrelatedFinding
+        
+        cross_file_data = [
+            {
+                "pattern": cf.pattern,
+                "severity": cf.severity,
+                "affected_files": cf.affected_files,
+                "affected_lines": [[fp, ln] for fp, ln in cf.affected_lines],
+                "root_cause_file": cf.root_cause_file,
+                "root_cause_line": cf.root_cause_line,
+                "root_cause_reason": cf.root_cause_reason,
+            }
+            for cf in correlated_findings
+        ]
+        
+        per_file_data = [
             {"file": fp, "findings": [f.model_dump(mode="json") for f in filtered]}
             for fp, findings in all_findings.items()
             if (filtered := _filter_by_severity(findings, threshold))
         ]
-        print(json.dumps(out, indent=2))
+        
+        output = {
+            "cross_file_findings": cross_file_data,
+            "per_file_findings": per_file_data,
+        }
+        print(json.dumps(output, indent=2))
         return
 
+    # Pretty format: show cross-file findings first
+    if correlated_findings:
+        _print_cross_file_findings(correlated_findings, output_format)
+
+    # Then show per-file findings
     filtered_pairs, high_count, medium_count, low_count = _collect_repo_finding_stats(
         all_findings, threshold
     )
@@ -795,9 +888,17 @@ def review_repo_cmd(
         root, mode, include_patterns, exclude_patterns, settings, max_files
     )
 
+    # Run cross-file correlation
+    from code_reviewer.indexer.indexer import CodebaseIndexer
+    from code_reviewer.core.correlator import CrossFileCorrelator
+    
+    graph = CodebaseIndexer.load_graph(root)
+    correlator = CrossFileCorrelator(graph=graph)
+    correlated_findings = correlator.correlate(all_findings)
+
     elapsed = time.perf_counter() - start
 
-    _output_repo_results(all_findings, settings, elapsed)
+    _output_repo_results(all_findings, correlated_findings, settings, elapsed)
 
 
 @app.command("index")
@@ -840,6 +941,7 @@ def index_cmd(
             f"{result.indexed_files} files indexed, "
             f"{result.skipped_files} unchanged, "
             f"{result.total_chunks} chunks, "
+            f"{result.total_edges} edges, "
             f"{result.elapsed_seconds:.1f}s"
         )
     except Exception as e:
