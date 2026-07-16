@@ -227,8 +227,17 @@ def _output_result(
 # review file helpers
 # ===========================================================================
 
-def _run_file_review(file_path: str, settings: Settings) -> ReviewResult:
+def _run_file_review(
+    file_path: str,
+    settings: Settings,
+    additional_context: str = ""
+) -> ReviewResult:
     """Instantiate FileReviewer and run the review on a single file.
+
+    Args:
+        file_path: Path to the file to review
+        settings: Review settings
+        additional_context: Optional codebase context to prepend to review
 
     Raises typer.Exit(code=1) on any review error.
     """
@@ -236,7 +245,7 @@ def _run_file_review(file_path: str, settings: Settings) -> ReviewResult:
     reviewer = FileReviewer(llm_client=llm_client, settings=settings)
     try:
         with console.status("[bold green]Analyzing file..."):
-            return reviewer.review_file(file_path)
+            return reviewer.review_file(file_path, additional_context=additional_context)
     except FileNotFoundError as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(code=1)
@@ -543,14 +552,31 @@ def _determine_repo_llm_targets(
 async def _run_repo_llm_pass_async(
     target_files: list[str],
     settings: Settings,
+    root: "Path",
 ) -> dict[str, ReviewResult]:
     """Run LLM reviews on multiple target files concurrently using asyncio.to_thread."""
+    from code_reviewer.retrieval.retriever import ContextRetriever
+    
+    # Check once if index exists (not inside the loop)
+    retriever = ContextRetriever(root)
+    use_context = retriever.index_exists()
+    
+    if use_context:
+        typer.echo("  Index found — enriching reviews with codebase context")
+    
     async def _review_one(fp: str) -> tuple[str, ReviewResult | None]:
         typer.echo(f"  LLM -> {fp}...")
         llm_client = LLMClient(model=settings.model, max_tokens=settings.max_tokens)
         reviewer = FileReviewer(llm_client=llm_client, settings=settings)
         try:
-            res = await asyncio.to_thread(reviewer.review_file, fp)
+            # Get context if index exists
+            context = ""
+            if use_context:
+                context = retriever.get_context_for_file(fp, n_similar=3)
+            
+            res = await asyncio.to_thread(
+                reviewer.review_file, fp, additional_context=context
+            )
             return fp, res
         except Exception as e:
             typer.echo(f"  [WARN] LLM failed for {fp}: {e}", err=True)
@@ -599,7 +625,7 @@ def _run_repo_review(
 
     try:
         # Run async LLM reviews concurrently using asyncio
-        llm_results = asyncio.run(_run_repo_llm_pass_async(target_files, settings))
+        llm_results = asyncio.run(_run_repo_llm_pass_async(target_files, settings, root))
         for fp, llm_result in llm_results.items():
             all_findings[fp] = combine_findings(all_findings[fp], llm_result.findings)
     except KeyboardInterrupt:

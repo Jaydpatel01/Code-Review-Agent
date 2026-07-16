@@ -97,12 +97,14 @@ class FileReviewer:
         self.settings = settings
         self.static_analyzer = StaticAnalyzer(settings)
 
-    def review_file(self, file_path: str) -> ReviewResult:
+    def review_file(self, file_path: str, additional_context: str = "") -> ReviewResult:
         """
         Review a single file using static analysis and the LLM.
 
         Args:
             file_path: Absolute or relative path to the Python file.
+            additional_context: Optional context from semantic search to prepend
+                               to the review prompt (e.g., similar functions)
 
         Returns:
             A ReviewResult containing merged, filtered findings.
@@ -126,12 +128,18 @@ class FileReviewer:
         static_findings = self.static_analyzer.analyze_file(file_path, content)
 
         # 2. Run LLM Analysis
+        user_message = USER_REVIEW_PROMPT_TEMPLATE.format(
+            file_path=file_path,
+            file_content=content
+        )
+        
+        # Prepend additional context if provided
+        if additional_context:
+            user_message = additional_context + "\n\n" + user_message
+        
         messages = [
             {"role": "system", "content": SYSTEM_REVIEW_PROMPT},
-            {"role": "user", "content": USER_REVIEW_PROMPT_TEMPLATE.format(
-                file_path=file_path,
-                file_content=content
-            )}
+            {"role": "user", "content": user_message}
         ]
         response: LLMReviewResponse = self.llm_client.generate_completion(
             messages=messages,
