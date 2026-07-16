@@ -840,6 +840,7 @@ def index_cmd(
             f"{result.indexed_files} files indexed, "
             f"{result.skipped_files} unchanged, "
             f"{result.total_chunks} chunks, "
+            f"{result.total_edges} edges, "
             f"{result.elapsed_seconds:.1f}s"
         )
     except Exception as e:
