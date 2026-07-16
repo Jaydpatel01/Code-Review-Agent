@@ -9,6 +9,10 @@ Review the provided code file and identify any issues. Focus on the following ca
 - docs: missing docstrings or comments
 - complexity: overly complex code, deep nesting, long functions
 
+You may be provided with a '## Codebase Context' section showing similar functions
+from elsewhere in the project. Use this to understand patterns and spot inconsistencies,
+but only flag issues in the file under review.
+
 For each finding, provide:
 - line_number: the 1-based line number where the issue starts (or null if it applies to the whole file)
 - severity: HIGH (critical bug/security risk), MEDIUM (performance or logic issue), LOW (style/docs issue), INFO (general advice)
