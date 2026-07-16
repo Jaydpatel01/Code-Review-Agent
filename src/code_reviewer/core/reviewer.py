@@ -217,15 +217,19 @@ class DiffReviewer:
         
         retriever = ContextRetriever(Path.cwd())
         context = ""
-        if retriever.index_exists():
-            # Get context for each changed file (max 3 files, 2 similar per file)
-            changed_files = list({h.file_path for h in hunks})
-            contexts = []
-            for fp in changed_files[:3]:  # Limit to 3 files to stay within budget
-                c = retriever.get_context_for_file(fp, n_similar=2)
-                if c:
-                    contexts.append(c)
-            context = "\n\n".join(contexts)
+        try:
+            if retriever.index_exists():
+                # Get context for each changed file (max 3 files, 2 similar per file)
+                changed_files = list({h.file_path for h in hunks})
+                contexts = []
+                for fp in changed_files[:3]:  # Limit to 3 files to stay within budget
+                    c = retriever.get_context_for_file(fp, n_similar=2)
+                    if c:
+                        contexts.append(c)
+                context = "\n\n".join(contexts)
+        except Exception as e:
+            logger.warning("Context retrieval failed: %s", e)
+            context = ""
         
         _agent_err: str | None = None
         try:
