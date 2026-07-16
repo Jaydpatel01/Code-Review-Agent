@@ -143,7 +143,7 @@ class TestRunRepoLLMPassAsync:
     @patch("code_reviewer.core.reviewer.FileReviewer.review_file")
     async def test_llm_pass_runs_concurrently(self, mock_review_file):
         # Setup mock return values
-        mock_review_file.side_effect = lambda fp: ReviewResult(
+        mock_review_file.side_effect = lambda fp, **kwargs: ReviewResult(
             file_path=fp,
             findings=[_make_finding("MEDIUM", fp)],
             summary="Checked",
@@ -153,15 +153,15 @@ class TestRunRepoLLMPassAsync:
 
         settings = Settings()
         target_files = ["f1.py", "f2.py"]
+        root = Path(".")
 
-        results = await _run_repo_llm_pass_async(target_files, settings)
+        results = await _run_repo_llm_pass_async(target_files, settings, root)
 
         assert len(results) == 2
         assert "f1.py" in results
         assert "f2.py" in results
         assert len(results["f1.py"].findings) == 1
         assert results["f1.py"].findings[0].file_path == "f1.py"
-
 
 class TestRunRepoReview:
     @patch("code_reviewer.cli._run_repo_ast_pass")
@@ -213,10 +213,9 @@ class TestRunRepoReview:
         )
 
         # Smart mode must only request LLM review on f1.py (HIGH)
-        mock_llm_pass.assert_called_once_with([f1], settings)
+        mock_llm_pass.assert_called_once_with([f1], settings, tmp_path)
         assert len(all_findings[f1]) == 1
         assert len(all_findings[f2]) == 0
-
 
 class TestRepoCliCommand:
     @patch("code_reviewer.cli._run_repo_review")
