@@ -509,8 +509,9 @@ _VALID_REPO_MODES = ["smart", "thorough", "static-only"]
 def _run_repo_ast_pass(
     walker: "FileWalker",
     settings: Settings,
+    graph: "Optional[DependencyGraph]" = None,
 ) -> tuple[dict[str, list[Finding]], dict[str, str]]:
-    """Walk files and score their risk tiers using AST analysis."""
+    """Walk files and score their risk tiers using AST analysis and centrality."""
     from code_reviewer.indexer.risk_scorer import score_file_risk
 
     all_findings: dict[str, list[Finding]] = {}
@@ -518,7 +519,7 @@ def _run_repo_ast_pass(
 
     for i, file_path in enumerate(walker.walk(), 1):
         typer.echo(f"  [{i}] {file_path} ", nl=False)
-        tier, findings = score_file_risk(file_path, settings)
+        tier, findings = score_file_risk(file_path, settings, graph=graph)
         fp_str = str(file_path)
         risk_tiers[fp_str] = tier
         all_findings[fp_str] = findings
@@ -599,6 +600,7 @@ def _run_repo_review(
     Returns a mapping of file_path -> findings.
     """
     from code_reviewer.indexer.file_walker import FileWalker
+    from code_reviewer.indexer.indexer import CodebaseIndexer
 
     walker = FileWalker(root, include=include_patterns, exclude=exclude_patterns, max_files=max_files)
     total = walker.count()
@@ -609,11 +611,16 @@ def _run_repo_review(
             f"Use --max-files 0 for all {total}."
         )
 
+    # Load dependency graph if available
+    graph = CodebaseIndexer.load_graph(root)
+    if graph is not None:
+        typer.echo(f"  Loaded dependency graph with {graph.graph.number_of_nodes()} nodes, {graph.graph.number_of_edges()} edges")
+
     # Step 2: Walk + AST score (all modes)
     all_findings: dict[str, list[Finding]] = {}
     risk_tiers: dict[str, str] = {}
     try:
-        all_findings, risk_tiers = _run_repo_ast_pass(walker, settings)
+        all_findings, risk_tiers = _run_repo_ast_pass(walker, settings, graph=graph)
     except KeyboardInterrupt:
         typer.echo("\n[Interrupted] Returning partial AST results.", err=True)
         return all_findings
