@@ -183,7 +183,14 @@ class CrossFileCorrelator:
 
         Returns:
             CorrelatedFinding object summarizing the group
+            
+        Raises:
+            ValueError: If findings list is empty
         """
+        if not findings:
+            # Defensive guard - should never happen in practice
+            raise ValueError("Cannot create CorrelatedFinding from empty findings list")
+        
         # Get the pattern from the first finding's message
         pattern = findings[0].message
 

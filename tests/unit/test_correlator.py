@@ -318,3 +318,11 @@ def test_severity_precedence():
     
     assert len(correlated) == 1
     assert correlated[0].severity == "HIGH"  # Highest severity wins
+
+
+def test_create_correlated_finding_empty_list():
+    """Test that _create_correlated_finding raises ValueError for empty list."""
+    correlator = CrossFileCorrelator()
+    
+    with pytest.raises(ValueError, match="Cannot create CorrelatedFinding from empty findings list"):
+        correlator._create_correlated_finding([])
