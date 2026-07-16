@@ -211,10 +211,30 @@ class DiffReviewer:
             )
 
         # 2. Multi-agent LLM review (parallel fan-out via LangGraph)
+        # Get codebase context if index exists
+        from pathlib import Path
+        from code_reviewer.retrieval.retriever import ContextRetriever
+        
+        retriever = ContextRetriever(Path.cwd())
+        context = ""
+        try:
+            if retriever.index_exists():
+                # Get context for each changed file (max 3 files, 2 similar per file)
+                changed_files = list({h.file_path for h in hunks})
+                contexts = []
+                for fp in changed_files[:3]:  # Limit to 3 files to stay within budget
+                    c = retriever.get_context_for_file(fp, n_similar=2)
+                    if c:
+                        contexts.append(c)
+                context = "\n\n".join(contexts)
+        except Exception as e:
+            logger.warning("Context retrieval failed: %s", e)
+            context = ""
+        
         _agent_err: str | None = None
         try:
             raw_llm_findings: List[Finding] = asyncio.run(
-                run_agent_review(hunks, self.settings.model, self.settings)
+                run_agent_review(hunks, self.settings.model, self.settings, codebase_context=context)
             )
         except Exception as exc:
             raw_llm_findings = []
