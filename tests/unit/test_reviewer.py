@@ -99,12 +99,20 @@ def test_diff_reviewer_filtering(mocker):
     ]
 
     # Patch run_agent_review at the location it is used in reviewer.py
-    async def _fake_run(hunks, model, settings):
+    async def _fake_run(hunks, model, settings, codebase_context=""):
         return agent_findings
 
     mocker.patch(
         "code_reviewer.core.reviewer.run_agent_review",
         side_effect=_fake_run,
+    )
+    
+    # Mock ContextRetriever to avoid trying to access ChromaDB during tests
+    mock_retriever = mocker.MagicMock()
+    mock_retriever.index_exists.return_value = False
+    mocker.patch(
+        "code_reviewer.retrieval.retriever.ContextRetriever",
+        return_value=mock_retriever,
     )
 
     settings = Settings()
