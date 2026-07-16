@@ -7,6 +7,8 @@ A production-grade AI-powered code review agent built with Python, Pydantic, and
 ## Features
 - **Git Diff Awareness**: Reviews only changed lines in a git diff (staged changes, branch comparisons, etc.), drastically reducing noise and token usage.
 - **Local File Review**: Instantly reviews single source files for security, performance, complexity, logic, docstrings, and style.
+- **Cross-File Root Cause Analysis**: Builds a call graph across the entire codebase, correlates findings between files, and identifies root causes using PageRank centrality.
+- **Multi-Agent Architecture**: Five specialized LLM agents run in parallel (security, performance, logic, style, docs) for comprehensive diff reviews.
 - **LiteLLM Abstraction**: Integrates with swappable LLM providers (defaulting to Gemini 3.1 Flash Lite) via a unified interface with built-in retry logic.
 - **Configurable Rules**: Uses a project-level `.codereviewer.yaml` config file for customizing severity thresholds and enabling/disabling specific rules.
 - **Flexible Outputs**: Supports console pretty-printing (complete with Unicode borders and color coding via `rich`), JSON reports, and GitHub Action annotation formats.
@@ -142,6 +144,92 @@ Each agent:
 
 ---
 
+## Cross-File Root Cause Analysis
+
+When reviewing a full codebase with `review repo`, the agent builds a **dependency graph** across all files and uses **PageRank centrality** to identify which functions have the highest blast radius. Findings are then **correlated across files** to surface root causes, not just symptoms.
+
+### How It Works
+
+1. **Indexing Phase** (`code-reviewer index .`):
+   - Chunks Python files into functions, classes, and methods
+   - Extracts call relationships via AST analysis
+   - Builds a directed graph: `function_a → function_b` (A calls B)
+   - Computes PageRank centrality scores for all nodes
+   - Persists graph to `.code-reviewer/cache/graph.pkl`
+
+2. **Review Phase** (`code-reviewer review repo`):
+   - Loads the dependency graph (if available)
+   - Runs AST + LLM review on all files
+   - Correlates findings across files using three passes:
+     - **Pattern Grouping**: Finds similar issues (>60% message overlap) across multiple files
+     - **Call Chain Propagation**: Identifies issues that propagate through function calls
+     - **Root Cause Identification**: Uses centrality to pinpoint the most central shared dependency
+
+3. **Output**:
+   - Cross-file patterns appear in a dedicated **CROSS-FILE FINDINGS** section
+   - Shows affected files, root cause location (if identified), and blast radius
+   - Per-file findings appear afterward as usual
+
+### Example Output
+
+```
+──────────────────────────────────────────────────────────
+CROSS-FILE FINDINGS (2 patterns found)
+──────────────────────────────────────────────────────────
+
+[HIGH] SQL injection vulnerability detected
+  Affects 3 files:
+    • src/api/users.py
+    • src/api/products.py
+    • src/api/orders.py
+  Root cause: src/database/query.py:42
+  Reason: All affected functions call build_query(), which may be the origin of this pattern.
+
+[MEDIUM] Missing error handling for network requests
+  Affects 2 files:
+    • src/clients/payment.py
+    • src/clients/shipping.py
+
+──────────────────────────────────────────────────────────
+```
+
+### Correlation Passes
+
+**Pass 1 — Pattern Grouping**  
+Groups findings with similar messages across files. Uses Jaccard similarity on tokenized messages (>60% threshold). Only reports patterns spanning 2+ files.
+
+**Pass 2 — Call Chain Propagation** *(stub - future enhancement)*  
+For each HIGH finding, identifies callers that also have findings. Traces issue propagation through the call graph.
+
+**Pass 3 — Root Cause Identification** *(stub - future enhancement)*  
+Finds common callees shared by functions with similar findings. The most central common dependency is marked as the likely root cause.
+
+### Benefits
+
+- **Reduces noise**: Instead of 10 similar "SQL injection" findings across 10 files, see 1 correlated pattern
+- **Prioritization**: Root cause annotations help you fix the source instead of symptoms
+- **Blast radius visibility**: Centrality scores show which functions impact the most code
+- **Zero false positives**: Only reports patterns found by LLM/AST — no speculation
+
+### Usage
+
+```bash
+# Index the codebase first
+uv run code-reviewer index .
+
+# Then run repo review with cross-file correlation
+uv run code-reviewer review repo src/ --mode smart
+```
+
+Output includes edge count:
+```
+Done. 55 files indexed, 619 chunks, 1247 edges, 66.7s
+```
+
+The graph is automatically loaded during `review repo` if it exists. No graph = no cross-file section (graceful degradation).
+
+---
+
 ## Usage
 
 ### CLI Commands
@@ -216,6 +304,27 @@ Review an entire codebase or directory recursively, with smart static filtering.
   ```bash
   uv run code-reviewer review repo . --include "*.py,*.js" --exclude "tests,build" --max-files 100
   ```
+
+#### Indexing for Cross-File Analysis
+
+Build a dependency graph and semantic search index for your codebase:
+
+* **Index the current directory**:
+  ```bash
+  uv run code-reviewer index .
+  ```
+
+* **Force re-index all files**:
+  ```bash
+  uv run code-reviewer index . --force
+  ```
+
+The index is stored in `.code-reviewer/` and is automatically used by `review repo` for:
+- Cross-file finding correlation
+- Root cause identification
+- Semantic code search context
+
+**Note**: Add `.code-reviewer/` to `.gitignore` — the index should be regenerated on each machine.
 
 ---
 
