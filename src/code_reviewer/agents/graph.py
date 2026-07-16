@@ -136,6 +136,7 @@ async def run_agent_review(
     hunks: list[DiffHunk],
     model: str,
     settings: "Settings",
+    codebase_context: str = "",
 ) -> list[Finding]:
     """Run the full multi-agent review pipeline on a set of diff hunks.
 
@@ -146,6 +147,7 @@ async def run_agent_review(
         hunks:    The parsed diff hunks to review.
         model:    The litellm model string (e.g. 'gemini/gemini-3.1-flash-lite').
         settings: The project Settings object (used for future filtering hooks).
+        codebase_context: Optional context from semantic search to enrich reviews.
 
     Returns:
         A deduplicated list of Finding objects from all five agents combined.
@@ -154,6 +156,7 @@ async def run_agent_review(
         hunks=hunks,
         model=model,
         context_lines_count=5,
+        codebase_context=codebase_context,
         security_findings=[],
         performance_findings=[],
         logic_findings=[],

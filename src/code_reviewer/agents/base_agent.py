@@ -59,7 +59,7 @@ class BaseReviewAgent(ABC):
     # Concrete helpers
     # ------------------------------------------------------------------
 
-    def build_user_message(self, hunks: list[DiffHunk]) -> str:
+    def build_user_message(self, hunks: list[DiffHunk], codebase_context: str = "") -> str:
         """Format hunks into the user message sent to the LLM.
 
         Includes added lines (prefix '+') and context lines (prefix ' ').
@@ -68,6 +68,7 @@ class BaseReviewAgent(ABC):
 
         Args:
             hunks: The diff hunks to format.
+            codebase_context: Optional context from semantic search.
 
         Returns:
             A structured multi-hunk text block ready to send as user content.
@@ -93,7 +94,13 @@ class BaseReviewAgent(ABC):
 
             parts.append(header + "\n" + "\n".join(lines))
 
-        return "\n\n".join(parts)
+        message = "\n\n".join(parts)
+        
+        # Append codebase context if provided
+        if codebase_context:
+            message += "\n\n## Codebase Context\n(For reference only — do not review the functions below)\n\n" + codebase_context
+        
+        return message
 
     def _extract_json_payload(self, raw: str) -> list[dict]:
         text = raw.strip()
@@ -231,7 +238,10 @@ class BaseReviewAgent(ABC):
         try:
             messages = [
                 {"role": "system", "content": self.system_prompt},
-                {"role": "user",   "content": self.build_user_message(state["hunks"])},
+                {"role": "user",   "content": self.build_user_message(
+                    state["hunks"], 
+                    state.get("codebase_context", "")
+                )},
             ]
 
             response = litellm.completion(

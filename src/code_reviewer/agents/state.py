@@ -59,6 +59,7 @@ class AgentState(TypedDict):
     hunks: list[DiffHunk]
     model: str
     context_lines_count: int
+    codebase_context: str  # Additional context from semantic search
 
     # ---- per-agent outputs ---------------------------------------------
     security_findings: list[Finding]
